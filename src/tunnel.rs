@@ -196,6 +196,8 @@ pub fn serve() -> i32 {
             return 1;
         }
     };
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+    eprintln!("listening 127.0.0.1:{port}");
     eprintln!(
         "keepalive proxy on 127.0.0.1:{port} idle={idle}s interval={intvl}s count={cnt} (dead path detected in ~{}s)",
         idle + intvl * cnt
@@ -218,5 +220,7 @@ mod tests {
         assert_eq!(parse_port(Some("65536")), 18080);
         assert_eq!(parse_port(Some("70000")), 18080);
         assert_eq!(parse_port(Some("junk")), 18080);
+        // 0 is valid: the OS picks a free port and the proxy reports it.
+        assert_eq!(parse_port(Some("0")), 0);
     }
 }

@@ -1,8 +1,9 @@
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 struct Proxy {
     child: Child,
@@ -16,26 +17,51 @@ impl Drop for Proxy {
     }
 }
 
-fn free_port() -> u16 {
-    let l = TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
-}
-
 fn start_proxy() -> Proxy {
-    let port = free_port();
-    let child = Command::new(env!("CARGO_BIN_EXE_keepalive-proxy"))
-        .env("KEEPALIVE_PROXY_PORT", port.to_string())
-        .stderr(Stdio::null())
+    let mut child = Command::new(env!("CARGO_BIN_EXE_keepalive-proxy"))
+        .env("KEEPALIVE_PROXY_PORT", "0")
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let proxy = Proxy { child, port };
-    for _ in 0..100 {
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return proxy;
+    let stderr = child.stderr.take().unwrap();
+    // Read stderr on a thread so a child that exits early (EOF) or hangs cannot block the test forever.
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut lines = BufReader::new(stderr);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match lines.read_line(&mut line) {
+                Ok(0) | Err(_) => {
+                    let _ = tx.send(None);
+                    return;
+                }
+                Ok(_) => {
+                    if tx.send(Some(line.clone())).is_err() {
+                        // Keep draining so the child never blocks on a full pipe.
+                    }
+                }
+            }
         }
-        thread::sleep(Duration::from_millis(50));
+    });
+    let mut proxy = Proxy { child, port: 0 };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(Some(l)) => {
+                if let Some(p) = l.trim().strip_prefix("listening 127.0.0.1:") {
+                    proxy.port = p.parse().expect("bad port in listening line");
+                    return proxy;
+                }
+            }
+            Ok(None) => {
+                let status = proxy.child.wait().ok();
+                panic!("proxy exited before listening: {status:?}");
+            }
+            Err(_) => panic!("proxy did not report a listening port within 10s"),
+        }
     }
-    panic!("proxy did not start");
 }
 
 fn start_echo() -> u16 {
