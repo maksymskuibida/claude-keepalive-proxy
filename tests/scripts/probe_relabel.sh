@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install with label A, reinstall with label B, then uninstall.
-# Every service the installs loaded must be unloaded (no running service left behind).
+# Probe: install with label A, reinstall with label B, then uninstall.
+# Every service the installs loaded must be unloaded (TH-4: no running service left behind).
 set -u
 src=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
