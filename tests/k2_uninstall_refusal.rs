@@ -2,7 +2,7 @@
 use std::process::Command;
 
 #[test]
-fn k2_uninstall_foreign_plist_refuses_with_message_and_exit_0() {
+fn k2_service_uninstall_foreign_plist_refuses_with_message_and_exit_0() {
     let home = std::env::temp_dir().join(format!("k2-refusal-home-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     let agents = home.join("Library/LaunchAgents");
