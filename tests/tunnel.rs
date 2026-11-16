@@ -1,8 +1,8 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
-use std::thread;
 use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 struct Proxy {
@@ -37,9 +37,8 @@ fn start_proxy() -> Proxy {
                     return;
                 }
                 Ok(_) => {
-                    if tx.send(Some(line.clone())).is_err() {
-                        // Keep draining so the child never blocks on a full pipe.
-                    }
+                    // Keep draining even if the receiver is gone, so the child never blocks on a full pipe.
+                    let _ = tx.send(Some(line.clone()));
                 }
             }
         }
