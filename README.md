@@ -21,7 +21,7 @@ Clone the repository, then run the install script from the clone. It needs a Rus
 ```sh
 git clone <repository-url> keepalive-proxy
 cd keepalive-proxy
-scripts/install.sh
+bash scripts/install.sh
 ```
 
 The script builds a release binary, copies it into the state folder (default `~/.keepalive-proxy`), writes a manifest of everything it created, and installs a per-user launchd service that listens on `127.0.0.1:18080`.
@@ -38,7 +38,7 @@ Flags:
 | `--dry-run` | print what would be done and change nothing |
 | `--bin FILE` | use a prebuilt binary instead of building |
 
-Try `scripts/install.sh --dry-run` first to see the plan.
+Try `bash scripts/install.sh --dry-run` first to see the plan.
 
 ## Use
 
@@ -74,10 +74,10 @@ Reads the proxy log, which is `$KEEPALIVE_PROXY_HOME/proxy.log` when that variab
 
 ```sh
 keepalive-proxy off
-scripts/uninstall.sh
+bash scripts/uninstall.sh
 ```
 
-`scripts/uninstall.sh` unloads the service and removes only the paths listed in the install manifest. It takes `--home DIR`, `--label NAME` and `--dry-run`. For a system install, run it under `sudo`.
+`bash scripts/uninstall.sh` unloads the service and removes only the paths listed in the install manifest. It takes `--home DIR`, `--label NAME` and `--dry-run`. For a system install, run it under `sudo`.
 
 ## Honest limits
 
