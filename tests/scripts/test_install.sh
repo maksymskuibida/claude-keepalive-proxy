@@ -78,7 +78,7 @@ out=$(bash "$src/tests/scripts/probe_relabel.sh" 2>&1) && ok "relabel reinstall 
   || { bad "relabel reinstall unloads both services"; echo "$out"; }
 
 # An unrecorded binary stops the install and leaves no folders behind.
-fst=$work/foreign-state; mkdir -p "$work/foreign-parent"
+mkdir -p "$work/foreign-parent"
 fst=$work/foreign-parent/state
 mkdir -p "$fst/bin"; echo mine > "$fst/bin/keepalive-proxy"
 bash "$src/scripts/install.sh" --home "$fst" --bin "$stub" --no-service >/dev/null 2>&1 \
@@ -86,6 +86,56 @@ bash "$src/scripts/install.sh" --home "$fst" --bin "$stub" --no-service >/dev/nu
 [ "$(cat "$fst/bin/keepalive-proxy")" = mine ] && [ ! -e "$fst/install-manifest" ] \
   && ok "foreign binary untouched" || bad "foreign binary untouched"
 rm -rf "$fst"
+
+# Scope change on reinstall: the user service is unloaded, the system one (needs root) is
+# named with the sudo command, nothing else is removed, the exit code is non-zero.
+if [ "$(id -u)" != 0 ]; then
+  : > "$work/stub.log"; st=$work/scope-state
+  bash "$src/scripts/install.sh" --home "$st" --bin "$stub" --label local.a >/dev/null 2>&1
+  bash "$src/scripts/install.sh" --home "$st" --bin "$stub" --label local.b --system >/dev/null 2>&1
+  : > "$work/stub.log"
+  err=$(bash "$src/scripts/uninstall.sh" --home "$st" 2>&1 >/dev/null) && bad "mixed scopes: uninstall exits non-zero" \
+    || ok "mixed scopes: uninstall exits non-zero"
+  grep -qx "service uninstall --label local.a" "$work/stub.log" && ok "mixed scopes: user service unloaded" \
+    || bad "mixed scopes: user service unloaded"
+  ! grep -q -- "--system" "$work/stub.log" && ok "mixed scopes: system service not run without root" \
+    || bad "mixed scopes: system service not run without root"
+  case "$err" in *"sudo "*local.b*) ok "mixed scopes: sudo command named" ;; *) bad "mixed scopes: sudo command named"; echo "$err" ;; esac
+  [ -x "$st/bin/keepalive-proxy" ] && grep -qx "service system yes local.b" "$st/install-manifest" \
+    && ! grep -q "service user yes local.a" "$st/install-manifest" \
+    && ok "mixed scopes: files kept, manifest reduced to the remaining service" \
+    || bad "mixed scopes: files kept, manifest reduced to the remaining service"
+  rm -rf "$st"
+fi
+
+# --label selects only the recorded lines with that label; the others stay recorded.
+: > "$work/stub.log"; st=$work/label-state
+bash "$src/scripts/install.sh" --home "$st" --bin "$stub" --label local.a >/dev/null 2>&1
+bash "$src/scripts/install.sh" --home "$st" --bin "$stub" --label local.b >/dev/null 2>&1
+: > "$work/stub.log"
+bash "$src/scripts/uninstall.sh" --home "$st" --label local.a >/dev/null 2>&1 && bad "--label with other services left: non-zero" \
+  || ok "--label with other services left: non-zero"
+[ "$(cat "$work/stub.log")" = "service uninstall --label local.a" ] && ok "--label unloads only the matching line" \
+  || { bad "--label unloads only the matching line"; cat "$work/stub.log"; }
+grep -qx "service user yes local.b" "$st/install-manifest" && [ -x "$st/bin/keepalive-proxy" ] \
+  && ok "--label keeps the other service recorded and the files" || bad "--label keeps the other service recorded and the files"
+: > "$work/stub.log"
+bash "$src/scripts/uninstall.sh" --home "$st" >/dev/null 2>&1 && [ ! -e "$st" ] \
+  && [ "$(cat "$work/stub.log")" = "service uninstall --label local.b" ] \
+  && ok "a later uninstall unloads the rest and removes everything" || bad "a later uninstall unloads the rest and removes everything"
+# A label with no recorded line is unloaded once, in the first recorded scope.
+: > "$work/stub.log"
+bash "$src/scripts/install.sh" --home "$st" --bin "$stub" --label local.a >/dev/null 2>&1
+: > "$work/stub.log"
+bash "$src/scripts/uninstall.sh" --home "$st" --label local.x >/dev/null 2>&1
+[ "$(cat "$work/stub.log")" = "service uninstall --label local.x" ] && ok "unrecorded --label unloaded once" \
+  || { bad "unrecorded --label unloaded once"; cat "$work/stub.log"; }
+rm -rf "$st"
+
+# Not root: SUDO_USER is ignored and HOME is used for the default state folder.
+bash "$src/scripts/install.sh" --bin "$stub" --no-service >/dev/null 2>&1
+SUDO_USER=nobody-here bash "$src/scripts/uninstall.sh" >/dev/null 2>&1 && [ ! -e "$HOME/.keepalive-proxy" ] \
+  && ok "default state folder resolves from HOME when not root" || bad "default state folder resolves from HOME when not root"
 
 # Bad arguments fail.
 bash "$src/scripts/install.sh" --port 99999 --dry-run >/dev/null 2>&1 \

@@ -3,9 +3,17 @@
 # paths listed in the manifest (<home>/install-manifest), all inside the state folder.
 #
 # Usage: scripts/uninstall.sh [--home DIR] [--label NAME] [--dry-run]
-#   --home DIR     state folder (default: $KEEPALIVE_PROXY_HOME, else ~/.keepalive-proxy)
-#   --label NAME   service label to unload (default: the one recorded in the manifest)
+#   --home DIR     state folder (default: $KEEPALIVE_PROXY_HOME, else ~/.keepalive-proxy; under
+#                  sudo, the invoking user's ~/.keepalive-proxy, as install.sh does)
+#   --label NAME   unload only the recorded service(s) with this label (default: every
+#                  recorded service). A label with no recorded line is unloaded once, in the
+#                  scope of the first recorded service.
 #   --dry-run      print what would be done; change nothing
+#
+# Every recorded service is unloaded in its own scope. A system service needs root: when
+# not root, the script names the remaining service and the sudo command, still unloads the
+# others, keeps the manifest (reduced to what remains) and every file, and exits non-zero.
+# Files and the manifest are removed only once all selected services are unloaded.
 #
 # Files in the state folder that are not in the manifest (settings, logs, anything
 # else) are left alone, and so is a folder that is not empty afterwards.
@@ -29,9 +37,20 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+run_user=
+if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+  case "$SUDO_USER" in *[!A-Za-z0-9._-]*) die "unusable SUDO_USER '$SUDO_USER'" ;; esac
+  run_user=$SUDO_USER
+fi
 if [ -z "$home_dir" ]; then
-  [ -n "${HOME:-}" ] || die "HOME is not set; pass --home DIR"
-  home_dir=$HOME/.keepalive-proxy
+  if [ -n "$run_user" ]; then
+    user_home=$(eval "echo ~$run_user")
+    case "$user_home" in /*) ;; *) die "cannot find the home of $run_user; pass --home DIR" ;; esac
+    home_dir=$user_home/.keepalive-proxy
+  else
+    [ -n "${HOME:-}" ] || die "HOME is not set; pass --home DIR"
+    home_dir=$HOME/.keepalive-proxy
+  fi
 fi
 case "$home_dir" in /*) ;; *) die "the state folder must be an absolute path: $home_dir" ;; esac
 if [ -n "$label" ]; then
@@ -50,13 +69,35 @@ safe_rel() {
   return 0
 }
 
-# 1. The service first, so nothing keeps running from a binary that is about to go.
-while IFS=' ' read -r kind scope given rec_label _; do
-  [ "$kind" = service ] || continue
-  # Manifest line: service <system|user> <yes|no> [label]. A --label argument wins.
+# 1. The services first, so nothing keeps running from a binary that is about to go.
+# Manifest line: service <system|user> <yes|no> [label].
+lines=()
+while IFS= read -r l; do
+  case "$l" in "service "*) lines+=("$l") ;; esac
+done < "$manifest"
+
+# Select what to unload, as "<line>|<scope>|<label>"; <line> is empty for an extra unload.
+plan=()
+matched=0
+for l in ${lines[@]+"${lines[@]}"}; do
+  read -r _ scope given rec_label _ <<< "$l"
   svc_label=
-  if [ -n "$label" ]; then svc_label=$label
-  elif [ "$given" = yes ]; then svc_label=$rec_label; fi
+  [ "$given" = yes ] && svc_label=$rec_label
+  if [ -n "$label" ]; then
+    [ "$svc_label" = "$label" ] || continue
+    matched=1
+  fi
+  plan+=("$l|$scope|$svc_label")
+done
+if [ -n "$label" ] && [ "$matched" = 0 ]; then
+  first_scope=user
+  [ ${#lines[@]} -gt 0 ] && read -r _ first_scope _ <<< "${lines[0]}"
+  plan+=("|$first_scope|$label")
+fi
+
+unloaded=() remaining=()
+for item in ${plan[@]+"${plan[@]}"}; do
+  l=${item%%|*}; rest=${item#*|}; scope=${rest%%|*}; svc_label=${rest#*|}
   args=(service uninstall)
   [ "$scope" = system ] && args+=(--system)
   [ -n "$svc_label" ] && args+=(--label "$svc_label")
@@ -64,10 +105,59 @@ while IFS=' ' read -r kind scope given rec_label _; do
     echo "would run: $bin ${args[*]}"
     continue
   fi
-  [ -x "$bin" ] || die "cannot unload the service: $bin is missing. Nothing was removed."
-  KEEPALIVE_PROXY_HOME=$home_dir "$bin" "${args[@]}" \
-    || die "'service uninstall' failed; nothing was removed"
-done < "$manifest"
+  if [ "$scope" = system ] && [ "$(id -u)" != 0 ]; then
+    echo "uninstall: the system service${svc_label:+ '$svc_label'} needs root; run: sudo $0 --home $home_dir${svc_label:+ --label $svc_label}" >&2
+    remaining+=("$l"); continue
+  fi
+  if [ ! -x "$bin" ]; then
+    echo "uninstall: cannot unload the service: $bin is missing" >&2
+    remaining+=("$l"); continue
+  fi
+  if [ -n "$run_user" ] && [ "$scope" = user ]; then
+    sudo -u "$run_user" -H env KEEPALIVE_PROXY_HOME="$home_dir" "$bin" "${args[@]}" < /dev/null && ok=1 || ok=0
+  else
+    KEEPALIVE_PROXY_HOME=$home_dir "$bin" "${args[@]}" < /dev/null && ok=1 || ok=0
+  fi
+  if [ "$ok" = 1 ]; then unloaded+=("$l")
+  else echo "uninstall: 'service uninstall${svc_label:+ --label $svc_label}' failed" >&2; remaining+=("$l"); fi
+done
+
+if [ ${#remaining[@]} -gt 0 ]; then
+  # Keep the manifest and every file; drop only the service lines that are now unloaded.
+  if [ ${#unloaded[@]} -gt 0 ]; then
+    : > "$manifest.new"
+    while IFS= read -r l; do
+      drop=0
+      for u in "${unloaded[@]}"; do [ "$l" = "$u" ] && drop=1; done
+      [ "$drop" = 1 ] || printf '%s\n' "$l" >> "$manifest.new"
+    done < "$manifest"
+    mv -f "$manifest.new" "$manifest"
+  fi
+  echo "uninstall: not all services were unloaded; the manifest and all files are kept. Fix the above and run again." >&2
+  exit 1
+fi
+
+# With --label, only the selected services were unloaded: the rest stay recorded, so
+# files and manifest stay too.
+if [ -n "$label" ] && [ "$dry" = 0 ]; then
+  others=0
+  for l in ${lines[@]+"${lines[@]}"}; do
+    in_plan=0
+    for u in ${unloaded[@]+"${unloaded[@]}"}; do [ "$l" = "$u" ] && in_plan=1; done
+    [ "$in_plan" = 1 ] || others=1
+  done
+  if [ "$others" = 1 ]; then
+    : > "$manifest.new"
+    while IFS= read -r l; do
+      drop=0
+      for u in ${unloaded[@]+"${unloaded[@]}"}; do [ "$l" = "$u" ] && drop=1; done
+      [ "$drop" = 1 ] || printf '%s\n' "$l" >> "$manifest.new"
+    done < "$manifest"
+    mv -f "$manifest.new" "$manifest"
+    echo "uninstall: other recorded services remain loaded; the manifest and all files are kept." >&2
+    exit 1
+  fi
+fi
 
 # 2. Files listed in the manifest.
 while IFS=' ' read -r kind rel _; do
