@@ -9,6 +9,16 @@ use std::process::Command;
 pub const FILE_LIMIT: u32 = 8192;
 const THROTTLE_SECONDS: u32 = 3;
 const NICE: i32 = -10;
+/// Key this tool writes into its plists; install and uninstall touch only plists that carry it.
+pub const MARKER_KEY: &str = "KeepaliveProxyManaged";
+
+/// True when the file exists and was not written by this tool.
+fn is_foreign(path: &Path) -> bool {
+    match std::fs::read_to_string(path) {
+        Ok(t) => !t.contains(&format!("<key>{MARKER_KEY}</key>")),
+        Err(_) => path.exists(),
+    }
+}
 
 /// Runs an external program: returns exit code and combined output.
 pub trait Runner {
@@ -120,6 +130,7 @@ pub fn build_plist(label: &str, exe: &Path, log: &Path, user: Option<&str>) -> S
         "  <key>Label</key>\n  <string>{}</string>\n",
         xml_escape(label)
     ));
+    s.push_str(&format!("  <key>{MARKER_KEY}</key>\n  <true/>\n"));
     s.push_str(&format!(
         "  <key>ProgramArguments</key>\n  <array>\n    <string>{}</string>\n    <string>serve</string>\n  </array>\n",
         xml_escape(&exe.to_string_lossy())
@@ -267,6 +278,13 @@ pub fn run_with(
         .unwrap_or_else(|| default_label(&env.exe));
     let path = plist_path(&label, opts.system, &home, &env.daemon_dir);
     let path_s = path.to_string_lossy().into_owned();
+
+    if matches!(opts.action, Action::Install | Action::Uninstall) && is_foreign(&path) {
+        out(&format!(
+            "service: {path_s} was not written by keepalive-proxy (no {MARKER_KEY} key). Left alone; nothing was changed."
+        ));
+        return 0;
+    }
 
     match opts.action {
         Action::Install => {
@@ -737,6 +755,34 @@ mod tests {
         assert_eq!(c, 0);
         assert_eq!(f.calls, vec![format!("launchctl unload {}", p.display())]);
         assert!(!p.exists());
+    }
+
+    #[test]
+    fn service_plist_carries_marker_key() {
+        let p = build_plist("local.x", Path::new("/a/b"), Path::new("/l"), None);
+        assert!(p.contains("<key>KeepaliveProxyManaged</key>\n  <true/>"));
+    }
+
+    #[test]
+    fn service_foreign_plist_left_alone_by_install_and_uninstall() {
+        let h = tmp("foreign");
+        let e = env(&h, false, None);
+        let p = h.join("Library/LaunchAgents/com.example.other.plist");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let body =
+            "<plist><dict><key>Label</key><string>com.example.other</string></dict></plist>\n";
+        std::fs::write(&p, body).unwrap();
+        for action in ["install", "uninstall"] {
+            let mut f = Fake {
+                calls: vec![],
+                reply: (0, String::new()),
+            };
+            let (c, t) = exec(&[action, "--label", "com.example.other"], &e, &mut f);
+            assert_eq!(c, 0);
+            assert!(t.contains("not written by keepalive-proxy"), "{t}");
+            assert!(f.calls.is_empty(), "{:?}", f.calls);
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), body);
+        }
     }
 
     #[test]
