@@ -23,5 +23,7 @@ need 'run:[[:space:]]*cargo clippy .*-D warnings' "clippy denies warnings"
 need 'run:[[:space:]]*cargo test' "cargo test"
 need 'tests/scripts/test_\*\.sh' "shell tests under tests/scripts"
 need 'run:[[:space:]]*bash scripts/audit\.sh --range HEAD[[:space:]]*$' "leak audit over full history (--range HEAD)"
+need '^permissions:[[:space:]]*$' "top-level permissions block"
+need '^[[:space:]]+contents:[[:space:]]*read[[:space:]]*$' "token limited to contents: read"
 need 'fetch-depth:[[:space:]]*0' "full history checkout"
 exit $fail

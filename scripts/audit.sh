@@ -81,7 +81,30 @@ fi
 # Patterns are assembled from pieces so this file does not match itself.
 home_re='(/Us''ers/|/ho''me/|[A-Za-z]:\\Us''ers\\)[A-Za-z0-9._-]+'
 email_re='[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
-link_re='(https?|file|ssh)://(local''host|127\.|0\.0\.0\.0|10\.[0-9]+\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|[^/ ]*\.(local|internal|corp|lan)([:/ ]|$)|[^/ ]*@)|file:/''//'
+link_re='(https?|file|ssh)://(127\.([1-9]|0\.[1-9]|0\.0\.[02-9]|0\.0\.1[0-9.])|0\.0\.0\.0|10\.[0-9]+\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|[^/ ]*\.(local|internal|corp|lan)([:/ ]|$)|[^/ ]*@)|file:/''//'
+
+# Allow-list (narrow, explicit; nothing else is exempt):
+#  1. Loopback: the address 127.0.0.1 and the name localhost are not private
+#     links (link_re above leaves them out; every other 127.x address, and any
+#     URL with a user part, is still flagged).
+#  2. Fake home paths used as test fixtures, removed from a copy of the text
+#     before the home-path check only (the user name, the real home path and the
+#     deny-list are still checked on the original text): a path under a folder
+#     named fake (fake/home/<name> or fake/Users/<name>), the made-up names
+#     alice and bob directly under the Users or home folder, and the one
+#     fixture path with the folder "made up" (see fake_re).
+#  3. Two baseline commits (full hashes) carry the owner's own address in their
+#     author and committer headers; the owner accepted that. Only those two
+#     headers are skipped: their messages, diffs and paths are scanned as usual.
+accepted_header_commits="17e3c76e323d672d3968f26e16aebc7a0d4861b2 fbf8fd7cb77a1338960c1969e1b87e7c6759b507"
+fake_re="/fake/(Us""ers|ho""me)/[A-Za-z0-9._-]+|/Us""ers/made up/bob"
+# The made-up names are followed by one more character (or the line end); it is put back
+# (\3) so that a real path right after the fixture is still seen.
+fake_name_re="/(Us""ers|ho""me)/(alice|bob)([^A-Za-z0-9._-]|$)"
+header_accepted() {
+  case " $accepted_header_commits " in *" $1 "*) return 0 ;; esac
+  return 1
+}
 
 # tag <kind>: turns "N:text" grep output into "label:N: [kind] text".
 # The label and kind travel in the environment, never inside a program text,
@@ -103,7 +126,7 @@ scan() {
   if [ -s "$tmp/user" ]; then
     grep -aniE -f "$tmp/user" "$tmp/in" 2>/dev/null | tag user-name >> "$hits"
   fi
-  grep -anE "$home_re" "$tmp/in" 2>/dev/null | tag home-path >> "$hits"
+  sed -E -e "s#$fake_re#<fake>#g" -e "s#$fake_name_re#<fake>\\3#g" "$tmp/in" 2>/dev/null | grep -anE "$home_re" 2>/dev/null | tag home-path >> "$hits"
   grep -anoE "$email_re" "$tmp/in" 2>/dev/null | grep -viE ':[^@:]*@users\.noreply\.github\.com$|:no-?reply@[^@]*$' | tag email >> "$hits"
   grep -anE "$link_re" "$tmp/in" 2>/dev/null | tag private-link >> "$hits"
 }
@@ -182,8 +205,10 @@ sort -u "$commits" | while read -r c; do
   short=$(printf '%.10s' "$c")
   git log -1 --format='%B' "$c" | scan "commit $short message"
   [ "${PIPESTATUS[0]}" -eq 0 ] || fail_scan "git log failed on $c"
-  git log -1 --format='author: %an <%ae>%ncommitter: %cn <%ce>' "$c" | scan "commit $short header"
-  [ "${PIPESTATUS[0]}" -eq 0 ] || fail_scan "git log failed on $c"
+  if ! header_accepted "$c"; then
+    git log -1 --format='author: %an <%ae>%ncommitter: %cn <%ce>' "$c" | scan "commit $short header"
+    [ "${PIPESTATUS[0]}" -eq 0 ] || fail_scan "git log failed on $c"
+  fi
   : > "$tmp/map"
   # A merge shows no diff by itself, so it is diffed against its first parent:
   # this finds lines only the merge adds (and also re-scans merged-in lines).

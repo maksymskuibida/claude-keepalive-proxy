@@ -35,8 +35,8 @@ leaks=(
   "path $HOME/project"
   "see /Us""ers/someone/code"
   "mail bob@exam""ple.com now"
-  "http://local""host:8080/x"
   "http://192.168"".1.5/admin"
+  "http://printer.lo""cal/x"
 )
 i=0
 for l in "${leaks[@]}"; do
@@ -124,7 +124,7 @@ out=$(audit "$r" --range "$base..HEAD"); rc=$?
 audit "$r" --range "nonsense..HEAD" >/dev/null 2>&1; [ $? -eq 2 ] && ok "bad range exits 2" || bad "bad range exits 2"
 
 # F-8: file names with | & and backslash do not hide hits.
-r=$(newrepo meta); echo "see /Us""ers/bob/x" > "$r/a|b&c\\d.txt"; commit "$r"
+r=$(newrepo meta); echo "see /Us""ers/carol/x" > "$r/a|b&c\\d.txt"; commit "$r"
 out=$(audit "$r"); rc=$?
 [ $rc -ne 0 ] && grep -qF 'a|b&c' <<<"$out" && ok "metachar file name hit kept" || bad "metachar file name rc=$rc out=$out"
 
@@ -263,8 +263,71 @@ r=$(newrepo longer); echo "zebulonqueen and azebulonq" > "$r/zebulonqueen.txt"; 
 out=$(audit "$r"); rc=$?
 [ $rc -eq 0 ] && ok "longer word containing the name is not flagged" || bad "longer word rc=$rc out=$out"
 
-# The real repository's own tracked files are clean.
+# Allow-list: harmless text passes ...
+r=$(newrepo allow)
+{
+  echo "proxy at http://127.0.0.1:18080 and http://local""host:3000/x"
+  echo "fixture /fake/ho""me/alice/.cfg and /fake/Us""ers/carol/x"
+  echo "dscl says /Us""ers/bob and /ho""me/alice/f and /Us""ers/made up/bob"
+} > "$r/f.txt"; commit "$r"
+out=$(audit "$r"); rc=$?
+[ $rc -eq 0 ] && ok "loopback and fake fixture paths pass" || bad "allow-list rc=$rc out=$out"
+# ... but near misses are still caught.
+near=(
+  "ht""tp://127.0.0.12:80/x"
+  "ht""tp://127.0.0.1""@evil.example/x"
+  "ht""tp://127.1.2.3/x"
+  "ht""tp://10.0.0.5/x"
+  "path /ho""me/bob/ho""me/john"
+  "path /Us""ers/alice/Us""ers/john/x"
+  "path /fake/ho""me/bob/ho""me/john"
+  "path /Us""ers/bobby/x"
+  "path /Us""ers/alice2/x"
+  "path /ho""me/dave/x"
+  "path /Us""ers/dave/fake/x"
+  "path /Us""ers/made up/carol"
+  "mail alice@exam""ple.com"
+)
+for l in "${near[@]}"; do
+  r=$(newrepo near); printf 'one\n%s\n' "$l" > "$r/f.txt"; commit "$r"
+  out=$(audit "$r"); rc=$?
+  [ $rc -eq 1 ] && grep -q '^f.txt:2:' <<<"$out" && ok "still caught: $l" || bad "near miss ($l) rc=$rc out=$out"
+done
+# The user name and the real home path are caught even inside a fake path.
+r=$(newrepo fakeuser); echo "x /fake/ho""me/zebulonq/y" > "$r/f.txt"; commit "$r"
+out=$(audit "$r"); rc=$?
+[ $rc -eq 1 ] && grep -q '^f.txt:1: \[user-name\]' <<<"$out" && ok "user name in fake path caught" || bad "fake path user rc=$rc out=$out"
+
+# Accepted baseline headers: skipped by full hash only. The test points the
+# list at a throwaway commit by rewriting the first hash in a copy of the script.
+r=$(newrepo hdr); echo clean > "$r/f.txt"
+git -C "$r" add -A; git -C "$r" -c user.email=real@priv""ate.org commit -q -m "accepted"
+acc=$(git -C "$r" rev-parse HEAD)
+echo more >> "$r/f.txt"; git -C "$r" add -A; git -C "$r" -c user.email=real@priv""ate.org commit -q -m "other"
+other=$(git -C "$r" rev-parse HEAD)
+out=$(audit "$r"); rc=$?
+[ $rc -eq 1 ] && grep -q "commit ${acc:0:10} header" <<<"$out" && ok "header leak found before it is accepted" || bad "header pre rc=$rc out=$out"
+sed "s/^accepted_header_commits=\"[0-9a-f]*/accepted_header_commits=\"$acc/" "$r/scripts/audit.sh" > "$r/scripts/audit2.sh"
+out=$(cd "$r" && bash scripts/audit2.sh); rc=$?
+[ $rc -eq 1 ] && ! grep -q "commit ${acc:0:10} header" <<<"$out" && grep -q "commit ${other:0:10} header" <<<"$out" && ok "accepted header skipped, other commit still caught" || bad "header accept rc=$rc out=$out"
+# A hash prefix does not accept anything.
+sed "s/^accepted_header_commits=\"[0-9a-f]*/accepted_header_commits=\"${acc:0:12}/" "$r/scripts/audit.sh" > "$r/scripts/audit3.sh"
+out=$(cd "$r" && bash scripts/audit3.sh); rc=$?
+[ $rc -eq 1 ] && grep -q "commit ${acc:0:10} header" <<<"$out" && ok "short hash accepts nothing" || bad "short hash rc=$rc out=$out"
+# The accepted commit's message and content are still scanned.
+r=$(newrepo hdr2); echo "mail bob@exam""ple.com" > "$r/f.txt"
+git -C "$r" add -A; git -C "$r" commit -q -m "by zebulonq"
+acc=$(git -C "$r" rev-parse HEAD)
+sed "s/^accepted_header_commits=\"[0-9a-f]*/accepted_header_commits=\"$acc/" "$r/scripts/audit.sh" > "$r/scripts/audit2.sh"
+out=$(cd "$r" && bash scripts/audit2.sh); rc=$?
+[ $rc -eq 1 ] && grep -q 'message:1: \[user-name\]' <<<"$out" && grep -q ':f.txt:1: \[email\]' <<<"$out" && ok "accepted commit still scanned for message and content" || bad "header accept scope rc=$rc out=$out"
+# Only the two named baseline hashes are in the script.
+n=$(grep -c '^accepted_header_commits="17e3c76e323d672d3968f26e16aebc7a0d4861b2 fbf8fd7cb77a1338960c1969e1b87e7c6759b507"$' "$src/scripts/audit.sh")
+[ "$n" -eq 1 ] && ok "allow-list names exactly the two baseline commits" || bad "allow-list hashes"
+
+# This repository audits clean over its whole history, as CI runs it (no deny-list, runner user).
 if (cd "$src" && git rev-parse -q --verify HEAD >/dev/null 2>&1); then
+  (cd "$src" && env HOME="$work/fakehome" USER=runner AUDIT_DENYLIST=/dev/null bash scripts/audit.sh --range HEAD >/dev/null) && ok "this repo audits clean (--range HEAD)" || bad "this repo audits clean (--range HEAD)"
   (cd "$src" && HOME=$real_home USER=$real_user bash scripts/audit.sh >/dev/null) && ok "this repo audits clean" || bad "this repo audits clean"
 fi
 
