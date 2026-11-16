@@ -48,6 +48,8 @@ pub struct Env {
     pub sudo_user: Option<String>,
     /// `KEEPALIVE_PROXY_HOME`, when set (ignored for the system daemon).
     pub proxy_home: Option<PathBuf>,
+    /// `KEEPALIVE_PROXY_PORT`, when set; given to the service only if it is a valid port.
+    pub proxy_port: Option<String>,
     /// Folder for the system daemon plist (`/Library/LaunchDaemons`; tests use a temp folder).
     pub daemon_dir: PathBuf,
 }
@@ -121,7 +123,19 @@ fn xml_escape(s: &str) -> String {
 }
 
 /// Plist text. `user` is Some for the system daemon.
+#[cfg(test)]
 pub fn build_plist(label: &str, exe: &Path, log: &Path, user: Option<&str>) -> String {
+    build_plist_with(label, exe, log, user, &[])
+}
+
+/// Like `build_plist`, with environment variables for the service (`vars` = name, value).
+pub fn build_plist_with(
+    label: &str,
+    exe: &Path,
+    log: &Path,
+    user: Option<&str>,
+    vars: &[(&str, String)],
+) -> String {
     let mut s = String::new();
     s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     s.push_str("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n");
@@ -149,6 +163,17 @@ pub fn build_plist(label: &str, exe: &Path, log: &Path, user: Option<&str>) -> S
         "  <key>StandardErrorPath</key>\n  <string>{}</string>\n",
         xml_escape(&log.to_string_lossy())
     ));
+    if !vars.is_empty() {
+        s.push_str("  <key>EnvironmentVariables</key>\n  <dict>\n");
+        for (k, v) in vars {
+            s.push_str(&format!(
+                "    <key>{}</key>\n    <string>{}</string>\n",
+                xml_escape(k),
+                xml_escape(v)
+            ));
+        }
+        s.push_str("  </dict>\n");
+    }
     if let Some(u) = user {
         s.push_str(&format!(
             "  <key>UserName</key>\n  <string>{}</string>\n",
@@ -283,7 +308,12 @@ pub fn run_with(
         out(&format!(
             "service: {path_s} was not written by keepalive-proxy (no {MARKER_KEY} key). Left alone; nothing was changed."
         ));
-        return 0;
+        // Install must not look successful when nothing was installed; uninstall has nothing to do.
+        return if matches!(opts.action, Action::Install) {
+            1
+        } else {
+            0
+        };
     }
 
     match opts.action {
@@ -296,7 +326,14 @@ pub fn run_with(
                     env.proxy_home.as_deref()
                 },
             );
-            let plist = build_plist(&label, &env.exe, &log, user.as_deref());
+            let mut vars: Vec<(&str, String)> = Vec::new();
+            if let Some(p) = env.proxy_port.as_ref().filter(|p| p.parse::<u16>().is_ok()) {
+                vars.push(("KEEPALIVE_PROXY_PORT", p.clone()));
+            }
+            if let (false, Some(h)) = (opts.system, env.proxy_home.as_deref()) {
+                vars.push(("KEEPALIVE_PROXY_HOME", h.to_string_lossy().into_owned()));
+            }
+            let plist = build_plist_with(&label, &env.exe, &log, user.as_deref(), &vars);
             let chown = user.as_ref().and_then(|u| {
                 log.parent().map(|d| {
                     vec![
@@ -441,6 +478,7 @@ pub fn run(args: &[String]) -> i32 {
         proxy_home: std::env::var_os("KEEPALIVE_PROXY_HOME")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from),
+        proxy_port: std::env::var("KEEPALIVE_PROXY_PORT").ok(),
         daemon_dir: PathBuf::from("/Library/LaunchDaemons"),
     };
     run_with(args, &env, &mut runner, &mut |m| println!("{m}"))
@@ -476,8 +514,72 @@ mod tests {
             is_root: root,
             sudo_user: sudo.map(String::from),
             proxy_home: None,
+            proxy_port: None,
             daemon_dir: home.join("daemons"),
         }
+    }
+
+    fn dry_text(args: &[&str], e: &Env) -> String {
+        let mut f = Fake {
+            calls: vec![],
+            reply: (0, String::new()),
+        };
+        let (c, t) = exec(args, e, &mut f);
+        assert_eq!(c, 0, "{t}");
+        t
+    }
+
+    #[test]
+    fn service_plist_with_vars_has_escaped_environment_block() {
+        let vars = [("A&B", "x<y>".to_string())];
+        let p = build_plist_with("local.x", Path::new("/a/b"), Path::new("/l"), None, &vars);
+        assert!(p.contains(
+            "<key>EnvironmentVariables</key>\n  <dict>\n    <key>A&amp;B</key>\n    <string>x&lt;y&gt;</string>\n  </dict>"
+        ));
+    }
+
+    #[test]
+    fn service_plist_without_vars_has_no_environment_block() {
+        let p = build_plist("local.x", Path::new("/a/b"), Path::new("/l"), None);
+        assert!(!p.contains("EnvironmentVariables"));
+        let h = tmp("novars");
+        let t = dry_text(&["install", "--dry-run"], &env(&h, false, None));
+        assert!(!t.contains("EnvironmentVariables"));
+    }
+
+    #[test]
+    fn service_install_dry_run_prints_home_and_port_variables() {
+        let h = tmp("envvars");
+        let mut e = env(&h, false, None);
+        e.proxy_home = Some(PathBuf::from("/state/dir"));
+        e.proxy_port = Some("19090".into());
+        let t = dry_text(&["install", "--dry-run"], &e);
+        assert!(t.contains("<key>EnvironmentVariables</key>"));
+        assert!(t.contains("<key>KEEPALIVE_PROXY_HOME</key>\n    <string>/state/dir</string>"));
+        assert!(t.contains("<key>KEEPALIVE_PROXY_PORT</key>\n    <string>19090</string>"));
+    }
+
+    #[test]
+    fn service_install_leaves_out_invalid_port() {
+        let h = tmp("badport");
+        for bad in ["70000", "junk", ""] {
+            let mut e = env(&h, false, None);
+            e.proxy_port = Some(bad.into());
+            let t = dry_text(&["install", "--dry-run"], &e);
+            assert!(!t.contains("KEEPALIVE_PROXY_PORT"), "{bad}: {t}");
+            assert!(!t.contains("EnvironmentVariables"));
+        }
+    }
+
+    #[test]
+    fn service_system_install_leaves_out_home_variable() {
+        let h = tmp("syshome");
+        let mut e = env(&h, true, Some("alice"));
+        e.proxy_home = Some(PathBuf::from("/state/dir"));
+        e.proxy_port = Some("19090".into());
+        let t = dry_text(&["install", "--system", "--dry-run"], &e);
+        assert!(!t.contains("KEEPALIVE_PROXY_HOME"));
+        assert!(t.contains("<key>KEEPALIVE_PROXY_PORT</key>"));
     }
 
     fn tmp(name: &str) -> PathBuf {
@@ -778,7 +880,8 @@ mod tests {
                 reply: (0, String::new()),
             };
             let (c, t) = exec(&[action, "--label", "com.example.other"], &e, &mut f);
-            assert_eq!(c, 0);
+            // Install fails (nothing installed); uninstall has nothing to do and succeeds.
+            assert_eq!(c, if action == "install" { 1 } else { 0 });
             assert!(t.contains("not written by keepalive-proxy"), "{t}");
             assert!(f.calls.is_empty(), "{:?}", f.calls);
             assert_eq!(std::fs::read_to_string(&p).unwrap(), body);
