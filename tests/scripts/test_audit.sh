@@ -8,6 +8,7 @@ fail=0
 ok()  { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fail=1; }
 
+real_home=$HOME; real_user=${USER:-}
 export HOME="$work/fakehome"; mkdir -p "$HOME"
 export USER=zebulonq
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -151,7 +152,7 @@ git -C "$r" push -q origin HEAD:refs/heads/main 2>/dev/null && bad "merge-only l
 
 # The real repository's own tracked files are clean.
 if (cd "$src" && git rev-parse -q --verify HEAD >/dev/null 2>&1); then
-  (cd "$src" && bash scripts/audit.sh >/dev/null) && ok "this repo audits clean" || bad "this repo audits clean"
+  (cd "$src" && HOME=$real_home USER=$real_user bash scripts/audit.sh >/dev/null) && ok "this repo audits clean" || bad "this repo audits clean"
 fi
 
 exit $fail
