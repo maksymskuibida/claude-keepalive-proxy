@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[test]
-fn k2_probe_report_counts_plain_tunnel_under_installed_env() {
+fn k2_probe_report_counts_plain_tunnel_under_service_env() {
     let dir = std::env::temp_dir().join(format!("k2-probe-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
