@@ -132,6 +132,7 @@ if [ ${#remaining[@]} -gt 0 ]; then
       [ "$drop" = 1 ] || printf '%s\n' "$l" >> "$manifest.new"
     done < "$manifest"
     mv -f "$manifest.new" "$manifest"
+    [ -z "$run_user" ] || chown "$run_user" "$manifest"
   fi
   echo "uninstall: not all services were unloaded; the manifest and all files are kept. Fix the above and run again." >&2
   exit 1
@@ -154,6 +155,7 @@ if [ -n "$label" ] && [ "$dry" = 0 ]; then
       [ "$drop" = 1 ] || printf '%s\n' "$l" >> "$manifest.new"
     done < "$manifest"
     mv -f "$manifest.new" "$manifest"
+    [ -z "$run_user" ] || chown "$run_user" "$manifest"
     echo "uninstall: other recorded services remain loaded; the manifest and all files are kept." >&2
     exit 1
   fi
