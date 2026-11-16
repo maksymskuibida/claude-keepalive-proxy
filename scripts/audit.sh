@@ -37,7 +37,7 @@ remote=
 case "${1:-}" in
   "") ;;
   --pre-push)
-    [ $# -le 2 ] || { echo "$usage" >&2; exit 2; }
+    # git passes the remote name, then its URL; only the name is used.
     mode=pre-push; remote=${2:-} ;;
   --range)
     [ -n "${2:-}" ] && [ $# -eq 2 ] || { echo "$usage" >&2; exit 2; }
