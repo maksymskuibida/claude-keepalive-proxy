@@ -208,9 +208,14 @@ out=$(audit "$r"); rc=$?
 [ $rc -ne 0 ] && grep -q '^f.txt:1:' <<<"$out" && ok "noreply lookalike found" || bad "noreply lookalike rc=$rc"
 
 # Permanent probes: linked-worktree deny-list, and a leak already on another remote.
-for p in probe_worktree_denylist probe_second_remote probe_leak_in_path probe_leak_in_refname; do
+for p in probe_worktree_denylist probe_second_remote probe_leak_in_path probe_leak_in_refname probe_user_name_joined; do
   bash "$src/tests/scripts/probes/$p.sh" >/dev/null 2>&1 && ok "$p" || bad "$p"
 done
+
+# The user name next to a non-ASCII letter is still found (only ASCII letters block a match).
+r=$(newrepo nonascii); printf 'by zebulonq\303\251 here\n' > "$r/f.txt"; commit "$r"
+out=$(audit "$r"); rc=$?
+[ $rc -ne 0 ] && grep -q '^f.txt:1:' <<<"$out" && ok "user name next to non-ASCII letter found" || bad "non-ASCII neighbour rc=$rc out=$out"
 
 # Names: a leak in a path (tracked, or added by a commit then removed) or a ref name.
 r=$(newrepo pathleak); echo x > "$r/a.txt"; commit "$r"

@@ -61,14 +61,14 @@ failed=$tmp/failed
 fail_scan() { echo "$1" >> "$failed"; }
 
 # Fixed strings: home path, deny-list lines. The user name is a case-insensitive
-# regex whose boundaries exclude only letters (so name_96 and name2 match,
+# regex whose boundaries exclude only ASCII letters (so name_96 and name2 match,
 # a longer word of letters does not).
 fixed=$tmp/fixed
 : > "$fixed"
 user=${USER:-$(id -un 2>/dev/null || true)}
 case "$user" in
   ""|root|runner|ubuntu|admin|nobody) ;;
-  *) [ "${#user}" -ge 3 ] && printf '(^|[^[:alpha:]])%s([^[:alpha:]]|$)\n' \
+  *) [ "${#user}" -ge 3 ] && printf '(^|[^A-Za-z])%s([^A-Za-z]|$)\n' \
        "$(printf '%s' "$user" | sed 's/[][\\.*^$(){}?+|]/\\&/g')" > "$tmp/user" ;;
 esac
 home=${HOME:-}
