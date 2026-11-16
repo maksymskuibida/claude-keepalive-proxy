@@ -13,7 +13,7 @@ mkdir -p "$(dirname "$hook")"
 cat > "$hook" <<HOOK
 #!/usr/bin/env bash
 $marker
-exec "$root/scripts/audit.sh" --pre-push
+exec "$root/scripts/audit.sh" --pre-push "\$@"
 HOOK
 chmod +x "$hook"
 echo "hook-install: installed $hook"

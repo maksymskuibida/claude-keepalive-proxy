@@ -2,8 +2,10 @@
 # Leak audit: scans tracked files and the commits about to be pushed
 # (messages, author and committer emails, added lines) for personal data.
 #
-# Usage: scripts/audit.sh [--pre-push | --range <rev-range>]
-#   --pre-push       read the pre-push hook's ref lines from stdin to pick the commits
+# Usage: scripts/audit.sh [--pre-push [<remote>] | --range <rev-range>]
+#   --pre-push       read the pre-push hook's ref lines from stdin to pick the commits;
+#                    <remote> is the hook's first argument: only commits already on
+#                    that remote are skipped (without it, any remote counts)
 #   --range A..B     audit the commits in that range, same as pre-push (for CI,
 #                    e.g. --range "$BASE_SHA..$HEAD_SHA"; the base must be fetched)
 #   default          audit every commit not yet on any remote, and every local
@@ -16,19 +18,27 @@
 #
 # Environment:
 #   AUDIT_DENYLIST  file with one forbidden string per line
-#                   (default: <git dir>/audit-denylist, never tracked)
+#                   (default: <common git dir>/audit-denylist, never tracked;
+#                   the same file applies from every linked worktree)
+#
+# Limits (accepted): UTF-16 files are not scanned as text; symlink targets in the
+# tree scan are not read; deny-lists with CRLF line endings do not match;
+# setsockopt failures in the proxy are ignored.
 #
 # Exit status: 0 clean, 1 at least one hit, 2 usage or environment error.
 set -u
 # Byte-wise scanning: a UTF-8 locale makes tr/grep stop at the first invalid byte.
 export LC_ALL=C
 
-usage="usage: audit.sh [--pre-push | --range <rev-range>]"
+usage="usage: audit.sh [--pre-push [<remote>] | --range <rev-range>]"
 mode=default
 range=
+remote=
 case "${1:-}" in
   "") ;;
-  --pre-push) mode=pre-push ;;
+  --pre-push)
+    [ $# -le 2 ] || { echo "$usage" >&2; exit 2; }
+    mode=pre-push; remote=${2:-} ;;
   --range)
     [ -n "${2:-}" ] && [ $# -eq 2 ] || { echo "$usage" >&2; exit 2; }
     mode=range; range=$2 ;;
@@ -37,7 +47,7 @@ esac
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "audit: not in a git repository" >&2; exit 2; }
 cd "$root" || exit 2
-gitdir=$(git rev-parse --absolute-git-dir)
+gitdir=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2
 denylist=${AUDIT_DENYLIST:-$gitdir/audit-denylist}
 
 tmp=$(mktemp -d) || exit 2
@@ -114,16 +124,21 @@ note_tags() {
     [ -n "$o" ] || break
   done
 }
+if [ -n "$remote" ]; then
+  not_remotes="--remotes=$remote"
+else
+  not_remotes="--remotes"
+fi
 if [ "$mode" = pre-push ]; then
   while read -r _lref lsha _rref rsha; do
     [ -n "${lsha:-}" ] || continue
     [ "$lsha" = "$zero" ] && continue
     note_tags "$lsha"
     if [ "$rsha" = "$zero" ]; then
-      git rev-list "$lsha" --not --remotes >> "$commits" 2>/dev/null
+      git rev-list "$lsha" --not "$not_remotes" >> "$commits" 2>/dev/null
     else
       git rev-list "$rsha..$lsha" >> "$commits" 2>/dev/null \
-        || git rev-list "$lsha" --not --remotes >> "$commits" 2>/dev/null
+        || git rev-list "$lsha" --not "$not_remotes" >> "$commits" 2>/dev/null
     fi
   done
 elif [ "$mode" = range ]; then

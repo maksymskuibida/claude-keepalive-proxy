@@ -207,6 +207,11 @@ r=$(newrepo nr2); echo "contact noreply.fan@gma""il.com" > "$r/f.txt"; commit "$
 out=$(audit "$r"); rc=$?
 [ $rc -ne 0 ] && grep -q '^f.txt:1:' <<<"$out" && ok "noreply lookalike found" || bad "noreply lookalike rc=$rc"
 
+# Permanent probes: linked-worktree deny-list, and a leak already on another remote.
+for p in probe_worktree_denylist probe_second_remote; do
+  bash "$src/tests/scripts/probes/$p.sh" >/dev/null 2>&1 && ok "$p" || bad "$p"
+done
+
 # The real repository's own tracked files are clean.
 if (cd "$src" && git rev-parse -q --verify HEAD >/dev/null 2>&1); then
   (cd "$src" && HOME=$real_home USER=$real_user bash scripts/audit.sh >/dev/null) && ok "this repo audits clean" || bad "this repo audits clean"
