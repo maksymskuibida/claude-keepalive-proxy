@@ -150,6 +150,41 @@ out=$(audit "$r" --range "$base..HEAD"); rc=$?
 [ $rc -ne 0 ] && grep -q 'commit .*:m.txt:1: \[email\]' <<<"$out" && ok "merge-only leak found by --range" || bad "merge-only leak --range rc=$rc out=$out"
 git -C "$r" push -q origin HEAD:refs/heads/main 2>/dev/null && bad "merge-only leak push blocked" || ok "merge-only leak push blocked"
 
+# Binary files: a leak next to a NUL byte is found, by file name, in the tree, in history and on push.
+r=$(newrepo bin); bareb="$work/bareb.git"; git init -q --bare "$bareb"
+git -C "$r" remote add origin "$bareb"
+echo clean > "$r/f.txt"; commit "$r" base
+(cd "$r" && bash scripts/hook-install.sh >/dev/null)
+git -C "$r" push -q origin HEAD:refs/heads/main 2>/dev/null
+printf 'artefact\0 mail bob@exam''ple.com\n' > "$r/blob.bin"; commit "$r" "add artefact"
+out=$(audit "$r"); rc=$?
+[ $rc -ne 0 ] && grep -q '^blob.bin:' <<<"$out" && grep -q 'commit .*:blob.bin:' <<<"$out" && ok "binary file leak found" || bad "binary file leak rc=$rc out=$out"
+git -C "$r" push -q origin HEAD:refs/heads/main 2>/dev/null && bad "binary leak push blocked" || ok "binary leak push blocked"
+
+# Annotated tags: message and tagger are scanned on push and with --range.
+r=$(newrepo tag); baret="$work/baret.git"; git init -q --bare "$baret"
+git -C "$r" remote add origin "$baret"
+echo clean > "$r/f.txt"; commit "$r" base
+(cd "$r" && bash scripts/hook-install.sh >/dev/null)
+git -C "$r" push -q origin HEAD:refs/heads/main 2>/dev/null
+git -C "$r" tag -a v1 -m "built on zebulonq laptop"
+git -C "$r" push -q origin v1 2>/dev/null && bad "tag message push blocked" || ok "tag message push blocked"
+out=$(audit "$r" --range "v1"); rc=$?
+[ $rc -ne 0 ] && grep -q '^tag .*user-name' <<<"$out" && ok "tag found by --range" || bad "tag --range rc=$rc out=$out"
+git -C "$r" tag -d v1 >/dev/null
+git -C "$r" -c user.email=real@priv''ate.org tag -a v2 -m "ok"
+git -C "$r" push -q origin v2 2>/dev/null && bad "tagger email push blocked" || ok "tagger email push blocked"
+git -C "$r" tag -d v2 >/dev/null
+git -C "$r" tag -a v3 -m "fine"
+git -C "$r" push -q origin v3 2>/dev/null && ok "clean tag push allowed" || bad "clean tag push allowed"
+
+# noreply: only real noreply forms are exempt.
+r=$(newrepo nr); printf 'a noreply@exam''ple.org\nb 42+x@users.noreply.github.com\n' > "$r/f.txt"; commit "$r"
+audit "$r" >/dev/null && ok "real noreply forms pass" || bad "real noreply forms pass"
+r=$(newrepo nr2); echo "contact noreply.fan@gma""il.com" > "$r/f.txt"; commit "$r"
+out=$(audit "$r"); rc=$?
+[ $rc -ne 0 ] && grep -q '^f.txt:1:' <<<"$out" && ok "noreply lookalike found" || bad "noreply lookalike rc=$rc"
+
 # The real repository's own tracked files are clean.
 if (cd "$src" && git rev-parse -q --verify HEAD >/dev/null 2>&1); then
   (cd "$src" && HOME=$real_home USER=$real_user bash scripts/audit.sh >/dev/null) && ok "this repo audits clean" || bad "this repo audits clean"

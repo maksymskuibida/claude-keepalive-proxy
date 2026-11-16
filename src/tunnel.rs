@@ -176,14 +176,19 @@ fn stamp() -> String {
     format!("{:02}:{:02}:{:02}Z", (s / 3600) % 24, (s / 60) % 60, s % 60)
 }
 
+/// Parses the listen port; anything that is not a valid u16 (junk, above 65535) gives the default 18080.
+fn parse_port(v: Option<&str>) -> u16 {
+    v.and_then(|s| s.trim().parse::<u16>().ok()).unwrap_or(18080)
+}
+
 /// Runs the proxy until killed. Reads the KEEPALIVE_* environment variables. Returns an exit code.
 pub fn serve() -> i32 {
-    let port = env_u32("KEEPALIVE_PROXY_PORT", 18080);
+    let port = parse_port(std::env::var("KEEPALIVE_PROXY_PORT").ok().as_deref());
     let idle = env_u32("KEEPALIVE_IDLE", 15);
     let intvl = env_u32("KEEPALIVE_INTERVAL", 10);
     let cnt = env_u32("KEEPALIVE_COUNT", 3);
     let verbose = env_u32("KEEPALIVE_VERBOSE", 0) == 1;
-    let listener = match TcpListener::bind(("127.0.0.1", port as u16)) {
+    let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("cannot bind 127.0.0.1:{port}: {e}");
@@ -198,4 +203,19 @@ pub fn serve() -> i32 {
         thread::spawn(move || handle(conn, idle, intvl, cnt, verbose));
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_port;
+
+    #[test]
+    fn port_parsing_rejects_out_of_range() {
+        assert_eq!(parse_port(None), 18080);
+        assert_eq!(parse_port(Some("9000")), 9000);
+        assert_eq!(parse_port(Some("65535")), 65535);
+        assert_eq!(parse_port(Some("65536")), 18080);
+        assert_eq!(parse_port(Some("70000")), 18080);
+        assert_eq!(parse_port(Some("junk")), 18080);
+    }
 }

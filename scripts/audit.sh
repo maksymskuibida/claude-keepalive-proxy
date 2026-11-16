@@ -68,27 +68,26 @@ link_re='(https?|file|ssh)://(local''host|127\.|0\.0\.0\.0|10\.[0-9]+\.|192\.168
 tag() {
   KIND=$1 awk 'BEGIN { m = ENVIRON["MAP"]; if (m != "") { k = 0; while ((getline l < m) > 0) map[++k] = l } }
     { i = index($0, ":"); n = substr($0, 1, i - 1); if (n in map) n = map[n]
-      printf "%s:%s: [%s] %s\n", ENVIRON["LABEL"], n, ENVIRON["KIND"], substr($0, i + 1) }'
+      printf "%s:%s: [%s] %s\n", ENVIRON["LABEL"], n, ENVIRON["KIND"], substr($0, i + 1, 200) }'
 }
 
 # scan <label>: reads text on stdin, appends "label:line: [kind] text" to hits.
 scan() {
   export LABEL=$1
   export MAP=${2:-}
-  cat > "$tmp/in"
-  grep -nF -f "$fixed" "$tmp/in" 2>/dev/null | tag home-or-denylist >> "$hits"
+  tr '\0' ' ' > "$tmp/in"
+  grep -anF -f "$fixed" "$tmp/in" 2>/dev/null | tag home-or-denylist >> "$hits"
   if [ -s "$tmp/user" ]; then
-    grep -nwiF -f "$tmp/user" "$tmp/in" 2>/dev/null | tag user-name >> "$hits"
+    grep -anwiF -f "$tmp/user" "$tmp/in" 2>/dev/null | tag user-name >> "$hits"
   fi
-  grep -nE "$home_re" "$tmp/in" 2>/dev/null | tag home-path >> "$hits"
-  grep -noE "$email_re" "$tmp/in" 2>/dev/null | grep -vi 'noreply' | tag email >> "$hits"
-  grep -nE "$link_re" "$tmp/in" 2>/dev/null | tag private-link >> "$hits"
+  grep -anE "$home_re" "$tmp/in" 2>/dev/null | tag home-path >> "$hits"
+  grep -anoE "$email_re" "$tmp/in" 2>/dev/null | grep -viE ':[^@:]*@users\.noreply\.github\.com$|:no-?reply@[^@]*$' | tag email >> "$hits"
+  grep -anE "$link_re" "$tmp/in" 2>/dev/null | tag private-link >> "$hits"
 }
 
 # 1. Tracked files.
 while IFS= read -r -d '' f; do
   [ -f "$f" ] || continue
-  grep -qI '' "$f" 2>/dev/null || continue
   scan "$f" < "$f"
 done < <(git ls-files -z)
 
@@ -96,10 +95,23 @@ done < <(git ls-files -z)
 zero=0000000000000000000000000000000000000000
 commits=$tmp/commits
 : > "$commits"
+tags=$tmp/tags
+: > "$tags"
+# note_tags <rev>: records the annotated tag objects on the way to a commit.
+note_tags() {
+  local o
+  o=$(git rev-parse -q --verify "$1" 2>/dev/null) || return 0
+  while [ "$(git cat-file -t "$o" 2>/dev/null)" = tag ]; do
+    echo "$o" >> "$tags"
+    o=$(git cat-file tag "$o" | sed -n 's/^object //p;/^$/q' | head -n 1)
+    [ -n "$o" ] || break
+  done
+}
 if [ "$mode" = pre-push ]; then
   while read -r _lref lsha _rref rsha; do
     [ -n "${lsha:-}" ] || continue
     [ "$lsha" = "$zero" ] && continue
+    note_tags "$lsha"
     if [ "$rsha" = "$zero" ]; then
       git rev-list "$lsha" --not --remotes >> "$commits" 2>/dev/null
     else
@@ -109,9 +121,14 @@ if [ "$mode" = pre-push ]; then
   done
 elif [ "$mode" = range ]; then
   git rev-list "$range" >> "$commits" 2>/dev/null || { echo "audit: bad range: $range" >&2; exit 2; }
+  for end in $(printf '%s\n' "$range" | sed 's/\.\.\.*/ /g'); do note_tags "${end#^}"; done
 else
   git rev-list HEAD --not --remotes >> "$commits" 2>/dev/null
 fi
+sort -u "$tags" | while read -r t; do
+  [ -n "$t" ] || continue
+  git cat-file tag "$t" | scan "tag $(printf '%.10s' "$t")"
+done
 sort -u "$commits" | while read -r c; do
   [ -n "$c" ] || continue
   short=$(printf '%.10s' "$c")
@@ -121,11 +138,11 @@ sort -u "$commits" | while read -r c; do
   # A merge shows no diff by itself, so it is diffed against its first parent:
   # this finds lines only the merge adds (and also re-scans merged-in lines).
   if [ "$(git rev-list --parents -n 1 "$c" | wc -w | tr -d ' ')" -gt 2 ]; then
-    difftree() { git -c core.quotepath=off diff-tree -r -p -U0 --no-color --no-ext-diff "$1^1" "$1"; }
+    difftree() { git -c core.quotepath=off diff-tree -r -p -U0 --text --no-color --no-ext-diff "$1^1" "$1"; }
   else
-    difftree() { git -c core.quotepath=off diff-tree -r --root -p -U0 --no-color --no-ext-diff "$1"; }
+    difftree() { git -c core.quotepath=off diff-tree -r --root -p -U0 --text --no-color --no-ext-diff "$1"; }
   fi
-  difftree "$c" | awk -v mapf="$tmp/map" '
+  difftree "$c" | tr '\0' ' ' | awk -v mapf="$tmp/map" '
     /^diff --git / { hdr = 1; next }
     hdr && /^\+\+\+ / { f = substr($0, 5); sub(/^b\//, "", f); sub(/\t.*$/, "", f); next }
     /^@@ / { hdr = 0; if (match($0, /\+[0-9]+/)) n = substr($0, RSTART + 1, RLENGTH - 1) + 0; next }
