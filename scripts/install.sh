@@ -9,7 +9,11 @@
 #   --label NAME   service label (default: $KEEPALIVE_PROXY_LABEL, else the binary's own default)
 #   --port N       listen port given to the service (default: $KEEPALIVE_PROXY_PORT, else the
 #                  binary's own default)
-#   --system       install the system daemon instead (the service command needs sudo then)
+#   --system       install the system daemon instead. Run the whole script under sudo: the
+#                  build then runs as the invoking user ($SUDO_USER), the state folder
+#                  defaults to that user's home (not root's) and the files it creates are
+#                  handed to that user; only the service step runs as root. Without
+#                  $SUDO_USER, a root run needs --home and --bin (a root build is refused).
 #   --no-service   build and copy only; do not touch launchd
 #   --dry-run      print what would be done; change nothing
 #   --bin FILE     use this prebuilt binary instead of building with cargo
@@ -41,9 +45,21 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Under sudo, act for the invoking user: build, state folder and file ownership.
+run_user=
+if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+  case "$SUDO_USER" in *[!A-Za-z0-9._-]*) die "unusable SUDO_USER '$SUDO_USER'" ;; esac
+  run_user=$SUDO_USER
+fi
 if [ -z "$home_dir" ]; then
-  [ -n "${HOME:-}" ] || die "HOME is not set; pass --home DIR"
-  home_dir=$HOME/.keepalive-proxy
+  if [ -n "$run_user" ]; then
+    user_home=$(eval "echo ~$run_user")
+    case "$user_home" in /*) ;; *) die "cannot find the home of $run_user; pass --home DIR" ;; esac
+    home_dir=$user_home/.keepalive-proxy
+  else
+    [ -n "${HOME:-}" ] || die "HOME is not set; pass --home DIR"
+    home_dir=$HOME/.keepalive-proxy
+  fi
 fi
 case "$home_dir" in /*) ;; *) die "the state folder must be an absolute path: $home_dir" ;; esac
 if [ -n "$port" ]; then
@@ -76,17 +92,22 @@ fi
 if [ -n "$prebuilt" ]; then
   src_bin=$prebuilt
 else
-  command -v cargo >/dev/null 2>&1 || die "cargo not found; install the Rust toolchain first"
-  (cd "$root" && cargo build --release) || die "cargo build failed"
+  if [ "$(id -u)" = 0 ] && [ -z "$run_user" ]; then
+    die "refusing to run cargo build as root; build as a normal user or pass --bin FILE"
+  fi
+  if [ -n "$run_user" ]; then
+    (cd "$root" && sudo -u "$run_user" -H sh -c 'command -v cargo >/dev/null 2>&1 || exit 127; cargo build --release') \
+      || die "cargo build failed (as $run_user; is cargo installed for that user?)"
+  else
+    command -v cargo >/dev/null 2>&1 || die "cargo not found; install the Rust toolchain first"
+    (cd "$root" && cargo build --release) || die "cargo build failed"
+  fi
   target=${CARGO_TARGET_DIR:-$root/target}
   src_bin=$target/release/keepalive-proxy
 fi
 [ -f "$src_bin" ] || die "binary not found: $src_bin"
 
-# Record only what this run creates; anything already there is not ours to remove.
-created=()
-[ -d "$home_dir" ] || { mkdir -p "$home_dir"; created+=("dir .") ; }
-[ -d "$bin_dir" ] || { mkdir "$bin_dir"; created+=("dir bin"); }
+# Refuse a foreign binary before creating anything.
 existing_bin=0
 if [ -e "$bin" ]; then
   # Replace only a binary an earlier install of ours recorded.
@@ -94,6 +115,11 @@ if [ -e "$bin" ]; then
     || die "$bin exists and was not installed by this script; leaving it alone"
   existing_bin=1
 fi
+
+# Record only what this run creates; anything already there is not ours to remove.
+created=() new_paths=()
+[ -d "$home_dir" ] || { mkdir -p "$home_dir"; created+=("dir ."); new_paths+=("$home_dir"); }
+[ -d "$bin_dir" ] || { mkdir "$bin_dir"; created+=("dir bin"); new_paths+=("$bin_dir"); }
 cp "$src_bin" "$bin.new" && chmod 755 "$bin.new" && mv -f "$bin.new" "$bin"
 created+=("file bin/keepalive-proxy")
 created+=("file install-manifest")
@@ -102,8 +128,8 @@ created+=("file install-manifest")
   echo "# keepalive-proxy install manifest: uninstall removes only what is listed here"
   # Keep entries from an earlier install that this run did not re-create.
   if [ -f "$manifest" ]; then
-    if [ "$no_service" = 1 ]; then grep -E '^(dir|file|service) ' "$manifest" || true
-    else grep -E '^(dir|file) ' "$manifest" || true; fi
+    # Service lines stay too, so uninstall unloads every service an install loaded.
+    grep -E '^(dir|file|service) ' "$manifest" || true
   fi
   for c in "${created[@]}"; do echo "$c"; done
   if [ "$no_service" = 0 ]; then
@@ -113,6 +139,9 @@ created+=("file install-manifest")
 } > "$manifest.new"
 # De-duplicate while keeping order.
 awk '!seen[$0]++' "$manifest.new" > "$manifest" && rm -f "$manifest.new"
+if [ -n "$run_user" ]; then
+  for pth in ${new_paths[@]+"${new_paths[@]}"} "$bin" "$manifest"; do chown "$run_user" "$pth"; done
+fi
 [ "$existing_bin" = 1 ] && echo "install: replaced $bin"
 echo "install: binary at $bin"
 

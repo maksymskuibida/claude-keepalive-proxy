@@ -73,6 +73,20 @@ $want_u" ] && ok "service label '${lbl:-unset}' recorded and unloaded the same" 
   rm -rf "$st"
 done
 
+# Relabelled reinstall: both services are unloaded by one uninstall.
+out=$(bash "$src/tests/scripts/probe_relabel.sh" 2>&1) && ok "relabel reinstall unloads both services" \
+  || { bad "relabel reinstall unloads both services"; echo "$out"; }
+
+# An unrecorded binary stops the install and leaves no folders behind.
+fst=$work/foreign-state; mkdir -p "$work/foreign-parent"
+fst=$work/foreign-parent/state
+mkdir -p "$fst/bin"; echo mine > "$fst/bin/keepalive-proxy"
+bash "$src/scripts/install.sh" --home "$fst" --bin "$stub" --no-service >/dev/null 2>&1 \
+  && bad "foreign binary refused" || ok "foreign binary refused"
+[ "$(cat "$fst/bin/keepalive-proxy")" = mine ] && [ ! -e "$fst/install-manifest" ] \
+  && ok "foreign binary untouched" || bad "foreign binary untouched"
+rm -rf "$fst"
+
 # Bad arguments fail.
 bash "$src/scripts/install.sh" --port 99999 --dry-run >/dev/null 2>&1 \
   && bad "bad port refused" || ok "bad port refused"
