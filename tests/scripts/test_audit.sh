@@ -208,9 +208,23 @@ out=$(audit "$r"); rc=$?
 [ $rc -ne 0 ] && grep -q '^f.txt:1:' <<<"$out" && ok "noreply lookalike found" || bad "noreply lookalike rc=$rc"
 
 # Permanent probes: linked-worktree deny-list, and a leak already on another remote.
-for p in probe_worktree_denylist probe_second_remote; do
+for p in probe_worktree_denylist probe_second_remote probe_leak_in_path probe_leak_in_refname; do
   bash "$src/tests/scripts/probes/$p.sh" >/dev/null 2>&1 && ok "$p" || bad "$p"
 done
+
+# Names: a leak in a path (tracked, or added by a commit then removed) or a ref name.
+r=$(newrepo pathleak); echo x > "$r/a.txt"; commit "$r"
+echo y > "$r/mail-bob@exam""ple.com.txt"; commit "$r" addname; git -C "$r" rm -q -- 'mail-bob@*'; commit "$r" rmname
+out=$(audit "$r"); rc=$?
+[ $rc -ne 0 ] && grep -q '^commit [0-9a-f]* path mail-bob@.*: \[email\]' <<<"$out" && ok "path added and removed is found in commit scan" || bad "commit path rc=$rc out=$out"
+r=$(newrepo pathdeny); echo x > "$r/a.txt"; commit "$r"; echo Greenfox > "$r/.git/audit-denylist"
+echo y > "$r/Greenfox-notes.txt"; commit "$r"
+out=$(audit "$r"); rc=$?
+[ $rc -ne 0 ] && grep -q '^path Greenfox-notes.txt: \[home-or-denylist\]' <<<"$out" && ok "deny-listed word in a path found" || bad "path denylist rc=$rc out=$out"
+r=$(newrepo reflocal); echo x > "$r/a.txt"; commit "$r"
+git -C "$r" branch zebulonq-wip; git -C "$r" tag v-zebulonq
+out=$(audit "$r"); rc=$?
+[ $rc -ne 0 ] && grep -q '^ref zebulonq-wip: \[user-name\]' <<<"$out" && grep -q '^ref v-zebulonq: \[user-name\]' <<<"$out" && ok "default mode scans local branch and tag names" || bad "local refs rc=$rc out=$out"
 
 # The real repository's own tracked files are clean.
 if (cd "$src" && git rev-parse -q --verify HEAD >/dev/null 2>&1); then

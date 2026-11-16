@@ -11,7 +11,8 @@
 #   default          audit every commit not yet on any remote, and every local
 #                    annotated tag (it cannot tell offline which are pushed)
 # For every selected commit the message, the author and committer headers and
-# every added line of its diff are scanned, so a leak added and later removed
+# every added line of its diff and the paths it adds are scanned,
+# as are file paths and pushed (or, by default, local) ref names, so a leak added and later removed
 # inside the range is still found. Content hits read
 # "commit <sha>:<file>:<line>: [kind] <text>"; the line is the
 # line in that commit's version of the file.
@@ -85,13 +86,15 @@ link_re='(https?|file|ssh)://(local''host|127\.|0\.0\.0\.0|10\.[0-9]+\.|192\.168
 tag() {
   KIND=$1 awk 'BEGIN { m = ENVIRON["MAP"]; if (m != "") { k = 0; while ((getline l < m) > 0) map[++k] = l } }
     { i = index($0, ":"); n = substr($0, 1, i - 1); if (n in map) n = map[n]
-      printf "%s:%s: [%s] %s\n", ENVIRON["LABEL"], n, ENVIRON["KIND"], substr($0, i + 1, 200) }'
+      if (ENVIRON["NOLN"] != "") printf "%s: [%s] %s\n", ENVIRON["LABEL"], ENVIRON["KIND"], substr($0, i + 1, 200)
+      else printf "%s:%s: [%s] %s\n", ENVIRON["LABEL"], n, ENVIRON["KIND"], substr($0, i + 1, 200) }'
 }
 
 # scan <label>: reads text on stdin, appends "label:line: [kind] text" to hits.
 scan() {
   export LABEL=$1
   export MAP=${2:-}
+  export NOLN=${3:-}
   tr '\0' ' ' > "$tmp/in" || fail_scan "tr failed on $LABEL"
   grep -anF -f "$fixed" "$tmp/in" 2>/dev/null | tag home-or-denylist >> "$hits"
   if [ -s "$tmp/user" ]; then
@@ -102,8 +105,15 @@ scan() {
   grep -anE "$link_re" "$tmp/in" 2>/dev/null | tag private-link >> "$hits"
 }
 
-# 1. Tracked files.
+# scan_name <kind-of-name> <name>: scans a file path or ref name, reported
+# as "<kind-of-name> <name>: [kind] text" (no line number).
+scan_name() {
+  printf '%s\n' "$2" | scan "$1 $2" "" 1
+}
+
+# 1. Tracked files: their names, then their contents.
 while IFS= read -r -d '' f; do
+  scan_name path "$f"
   [ -f "$f" ] || continue
   scan "$f" < "$f"
 done < <(git ls-files -z)
@@ -130,9 +140,10 @@ else
   not_remotes="--remotes"
 fi
 if [ "$mode" = pre-push ]; then
-  while read -r _lref lsha _rref rsha; do
+  while read -r _lref lsha rref rsha; do
     [ -n "${lsha:-}" ] || continue
     [ "$lsha" = "$zero" ] && continue
+    [ -n "${rref:-}" ] && scan_name ref "$rref"
     note_tags "$lsha"
     if [ "$rsha" = "$zero" ]; then
       git rev-list "$lsha" --not "$not_remotes" >> "$commits" 2>/dev/null
@@ -151,6 +162,9 @@ elif [ "$mode" = range ]; then
   note_tags "$end"
 else
   git rev-list HEAD --not --remotes >> "$commits" 2>/dev/null
+  while IFS= read -r rn; do
+    [ -n "$rn" ] && scan_name ref "$rn"
+  done < <(git for-each-ref --format='%(refname:short)' refs/heads refs/tags)
   while read -r tobj ttype; do
     [ "$ttype" = tag ] && echo "$tobj" >> "$tags"
   done < <(git for-each-ref --format='%(objectname) %(objecttype)' refs/tags)
@@ -167,6 +181,8 @@ sort -u "$commits" | while read -r c; do
   [ "${PIPESTATUS[0]}" -eq 0 ] || fail_scan "git log failed on $c"
   git log -1 --format='author: %an <%ae>%ncommitter: %cn <%ce>' "$c" | scan "commit $short header"
   [ "${PIPESTATUS[0]}" -eq 0 ] || fail_scan "git log failed on $c"
+  git -c core.quotepath=off diff-tree -r -z --root --no-commit-id --name-only --diff-filter=AR "${c}" 2>/dev/null \
+    | while IFS= read -r -d '' pf; do scan_name "commit $short path" "$pf"; done
   : > "$tmp/map"
   # A merge shows no diff by itself, so it is diffed against its first parent:
   # this finds lines only the merge adds (and also re-scans merged-in lines).
@@ -175,6 +191,12 @@ sort -u "$commits" | while read -r c; do
   else
     difftree() { git -c core.quotepath=off diff-tree -r --root -p -U0 --text --no-color --no-ext-diff "$1"; }
   fi
+  if [ "$(git rev-list --parents -n 1 "$c" | wc -w | tr -d ' ')" -gt 2 ]; then
+    git -c core.quotepath=off diff-tree -r -z --name-only --diff-filter=AR "$c^1" "$c" > "$tmp/paths"
+  else
+    git -c core.quotepath=off diff-tree -r -z --root --no-commit-id --name-only --diff-filter=AR "$c" > "$tmp/paths"
+  fi || fail_scan "path listing failed on $c"
+  while IFS= read -r -d '' pf; do scan_name "commit $short path" "$pf"; done < "$tmp/paths"
   difftree "$c" | tr '\0' ' ' | awk -v mapf="$tmp/map" '
     /^diff --git / { hdr = 1; next }
     hdr && /^\+\+\+ / { f = substr($0, 5); sub(/^b\//, "", f); sub(/\t.*$/, "", f); next }
