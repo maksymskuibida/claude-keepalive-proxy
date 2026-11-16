@@ -5,6 +5,10 @@ edition = "2021"
 
 [dependencies]
 
+[features]
+# Slow tests of the keepalive schedule (tests/timing.rs); off by default.
+timing-tests = []
+
 [profile.release]
 opt-level = 3
 lto = true
