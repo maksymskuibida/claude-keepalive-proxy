@@ -6,7 +6,8 @@
 #   --pre-push       read the pre-push hook's ref lines from stdin to pick the commits
 #   --range A..B     audit the commits in that range, same as pre-push (for CI,
 #                    e.g. --range "$BASE_SHA..$HEAD_SHA"; the base must be fetched)
-#   default          audit every commit not yet on any remote
+#   default          audit every commit not yet on any remote, and every local
+#                    annotated tag (it cannot tell offline which are pushed)
 # For every selected commit the message, the author and committer headers and
 # every added line of its diff are scanned, so a leak added and later removed
 # inside the range is still found. Content hits read
@@ -19,6 +20,8 @@
 #
 # Exit status: 0 clean, 1 at least one hit, 2 usage or environment error.
 set -u
+# Byte-wise scanning: a UTF-8 locale makes tr/grep stop at the first invalid byte.
+export LC_ALL=C
 
 usage="usage: audit.sh [--pre-push | --range <rev-range>]"
 mode=default
@@ -41,6 +44,10 @@ tmp=$(mktemp -d) || exit 2
 trap 'rm -rf "$tmp"' EXIT
 hits=$tmp/hits
 : > "$hits"
+failed=$tmp/failed
+: > "$failed"
+# A scan step that fails must never read as clean.
+fail_scan() { echo "$1" >> "$failed"; }
 
 # Fixed strings: current user, home path, deny-list lines.
 fixed=$tmp/fixed
@@ -75,7 +82,7 @@ tag() {
 scan() {
   export LABEL=$1
   export MAP=${2:-}
-  tr '\0' ' ' > "$tmp/in"
+  tr '\0' ' ' > "$tmp/in" || fail_scan "tr failed on $LABEL"
   grep -anF -f "$fixed" "$tmp/in" 2>/dev/null | tag home-or-denylist >> "$hits"
   if [ -s "$tmp/user" ]; then
     grep -anwiF -f "$tmp/user" "$tmp/in" 2>/dev/null | tag user-name >> "$hits"
@@ -121,19 +128,30 @@ if [ "$mode" = pre-push ]; then
   done
 elif [ "$mode" = range ]; then
   git rev-list "$range" >> "$commits" 2>/dev/null || { echo "audit: bad range: $range" >&2; exit 2; }
-  for end in $(printf '%s\n' "$range" | sed 's/\.\.\.*/ /g'); do note_tags "${end#^}"; done
+  # Only the included end: the base (before ..) is excluded from the range.
+  case "$range" in
+    *..*) end=${range##*..}; [ -n "$end" ] || end=HEAD ;;
+    *) end=${range#^} ;;
+  esac
+  note_tags "$end"
 else
   git rev-list HEAD --not --remotes >> "$commits" 2>/dev/null
+  while read -r tobj ttype; do
+    [ "$ttype" = tag ] && echo "$tobj" >> "$tags"
+  done < <(git for-each-ref --format='%(objectname) %(objecttype)' refs/tags)
 fi
 sort -u "$tags" | while read -r t; do
   [ -n "$t" ] || continue
   git cat-file tag "$t" | scan "tag $(printf '%.10s' "$t")"
+  [ "${PIPESTATUS[0]}" -eq 0 ] || fail_scan "git cat-file failed on tag $t"
 done
 sort -u "$commits" | while read -r c; do
   [ -n "$c" ] || continue
   short=$(printf '%.10s' "$c")
   git log -1 --format='%B' "$c" | scan "commit $short message"
+  [ "${PIPESTATUS[0]}" -eq 0 ] || fail_scan "git log failed on $c"
   git log -1 --format='author: %an <%ae>%ncommitter: %cn <%ce>' "$c" | scan "commit $short header"
+  [ "${PIPESTATUS[0]}" -eq 0 ] || fail_scan "git log failed on $c"
   : > "$tmp/map"
   # A merge shows no diff by itself, so it is diffed against its first parent:
   # this finds lines only the merge adds (and also re-scans merged-in lines).
@@ -148,7 +166,17 @@ sort -u "$commits" | while read -r c; do
     /^@@ / { hdr = 0; if (match($0, /\+[0-9]+/)) n = substr($0, RSTART + 1, RLENGTH - 1) + 0; next }
     !hdr && /^\+/ { print f ":" n > mapf; print substr($0, 2); n++ }
   ' | scan "commit $short" "$tmp/map"
+  for st in "${PIPESTATUS[@]}"; do
+    [ "$st" -eq 0 ] || { fail_scan "diff scan failed on $c"; break; }
+  done
 done
+
+if [ -s "$failed" ]; then
+  cat "$hits"
+  sed 's/^/audit: /' "$failed" >&2
+  echo "audit: scan incomplete, not clean" >&2
+  exit 2
+fi
 
 if [ -s "$hits" ]; then
   cat "$hits"

@@ -161,6 +161,17 @@ out=$(audit "$r"); rc=$?
 [ $rc -ne 0 ] && grep -q '^blob.bin:' <<<"$out" && grep -q 'commit .*:blob.bin:' <<<"$out" && ok "binary file leak found" || bad "binary file leak rc=$rc out=$out"
 git -C "$r" push -q origin HEAD:refs/heads/main 2>/dev/null && bad "binary leak push blocked" || ok "binary leak push blocked"
 
+# Binary with a non-UTF-8 byte before the leak: found in the tree, in history and on push.
+r=$(newrepo bin2); bareb2="$work/bareb2.git"; git init -q --bare "$bareb2"
+git -C "$r" remote add origin "$bareb2"
+echo clean > "$r/f.txt"; commit "$r" base
+(cd "$r" && bash scripts/hook-install.sh >/dev/null)
+git -C "$r" push -q origin HEAD:refs/heads/main 2>/dev/null
+printf 'head\377\376 junk\0 mail bob@exam''ple.com\n' > "$r/img.bin"; commit "$r" "add image"
+out=$(LC_ALL=en_US.UTF-8 audit "$r"); rc=$?
+[ $rc -eq 1 ] && grep -q '^img.bin:' <<<"$out" && grep -q 'commit .*:img.bin:' <<<"$out" && ok "non-UTF-8 binary leak found" || bad "non-UTF-8 binary leak rc=$rc out=$out"
+LC_ALL=en_US.UTF-8 git -C "$r" push -q origin HEAD:refs/heads/main 2>/dev/null && bad "non-UTF-8 leak push blocked" || ok "non-UTF-8 leak push blocked"
+
 # Annotated tags: message and tagger are scanned on push and with --range.
 r=$(newrepo tag); baret="$work/baret.git"; git init -q --bare "$baret"
 git -C "$r" remote add origin "$baret"
@@ -177,6 +188,17 @@ git -C "$r" push -q origin v2 2>/dev/null && bad "tagger email push blocked" || 
 git -C "$r" tag -d v2 >/dev/null
 git -C "$r" tag -a v3 -m "fine"
 git -C "$r" push -q origin v3 2>/dev/null && ok "clean tag push allowed" || bad "clean tag push allowed"
+
+# --range excludes tags at its base; default mode scans local unpushed tags.
+r=$(newrepo tag2)
+echo clean > "$r/f.txt"; commit "$r" base
+git -C "$r" tag -a vbase -m "built on zebulonq laptop"
+echo more >> "$r/f.txt"; commit "$r" next
+c1=$(git -C "$r" rev-parse HEAD)
+out=$(audit "$r" --range "vbase..$c1"); rc=$?
+[ $rc -eq 0 ] && ok "range ignores tag at its base" || bad "range base tag rc=$rc out=$out"
+out=$(audit "$r"); rc=$?
+[ $rc -ne 0 ] && grep -q '^tag .*user-name' <<<"$out" && ok "default mode scans local tags" || bad "default local tag rc=$rc out=$out"
 
 # noreply: only real noreply forms are exempt.
 r=$(newrepo nr); printf 'a noreply@exam''ple.org\nb 42+x@users.noreply.github.com\n' > "$r/f.txt"; commit "$r"
