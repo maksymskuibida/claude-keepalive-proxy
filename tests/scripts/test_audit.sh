@@ -226,6 +226,16 @@ git -C "$r" branch zebulonq-wip; git -C "$r" tag v-zebulonq
 out=$(audit "$r"); rc=$?
 [ $rc -ne 0 ] && grep -q '^ref zebulonq-wip: \[user-name\]' <<<"$out" && grep -q '^ref v-zebulonq: \[user-name\]' <<<"$out" && ok "default mode scans local branch and tag names" || bad "local refs rc=$rc out=$out"
 
+# The hook names the leaking path and the pushed ref.
+r=$(newrepo hookname); echo x > "$r/a.txt"; commit "$r"
+git init -q --bare "$work/hookname-pub.git"; git -C "$r" remote add public "$work/hookname-pub.git"
+(cd "$r" && bash scripts/hook-install.sh >/dev/null)
+out=$(git -C "$r" push public HEAD:refs/heads/zebulonq/wip 2>&1); rc=$?
+[ $rc -ne 0 ] && grep -q 'ref refs/heads/zebulonq/wip: \[user-name\]' <<<"$out" && ok "hook names the leaking ref" || bad "hook ref name rc=$rc out=$out"
+mkdir -p "$r/notes"; echo plain > "$r/notes/zebulonq-todo.txt"; commit "$r" notes
+out=$(audit "$r"); rc=$?
+[ $rc -ne 0 ] && grep -q '^path notes/zebulonq-todo.txt: \[user-name\]' <<<"$out" && ok "audit names the leaking path" || bad "path name rc=$rc out=$out"
+
 # The real repository's own tracked files are clean.
 if (cd "$src" && git rev-parse -q --verify HEAD >/dev/null 2>&1); then
   (cd "$src" && HOME=$real_home USER=$real_user bash scripts/audit.sh >/dev/null) && ok "this repo audits clean" || bad "this repo audits clean"

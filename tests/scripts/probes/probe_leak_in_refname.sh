@@ -11,6 +11,6 @@ git init -q --bare "$work/public.git"; git -C "$r" remote add public "$work/publ
 echo clean > "$r/f.txt"; git -C "$r" add -A; git -C "$r" commit -q -m base
 (cd "$r" && bash scripts/hook-install.sh >/dev/null)
 git -C "$r" push -q public HEAD:refs/heads/main 2>/dev/null || { echo "setup push blocked"; exit 3; }
-out=$(git -C "$r" push public HEAD:refs/heads/zebulonq/wip 2>&1); rc=$?
+git -C "$r" push -q public HEAD:refs/heads/zebulonq/wip 2>/dev/null; rc=$?
 echo "push of user-named branch rc=$rc (expected non-zero: blocked)"
-[ "$rc" -ne 0 ] && grep -q 'ref refs/heads/zebulonq/wip: \[user-name\]' <<<"$out"
+[ "$rc" -ne 0 ]
