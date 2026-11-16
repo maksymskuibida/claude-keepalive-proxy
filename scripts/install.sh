@@ -14,6 +14,9 @@
 #                  defaults to that user's home (not root's) and the files it creates are
 #                  handed to that user; only the service step runs as root. Without
 #                  $SUDO_USER, a root run needs --home and --bin (a root build is refused).
+#                  Without --system, a sudo run loads the per-user service as the invoking
+#                  user (as uninstall.sh unloads it); a root run with no $SUDO_USER and no
+#                  --system refuses to install the service.
 #   --no-service   build and copy only; do not touch launchd
 #   --dry-run      print what would be done; change nothing
 #   --bin FILE     use this prebuilt binary instead of building with cargo
@@ -152,7 +155,14 @@ fi
 
 export KEEPALIVE_PROXY_HOME=$home_dir
 [ -n "$port" ] && export KEEPALIVE_PROXY_PORT=$port
-if ! "$bin" "${service_args[@]}"; then
+if [ "$system" = 0 ] && [ "$(id -u)" = 0 ]; then
+  # The user service must be loaded in the invoking user's own domain, where uninstall.sh
+  # unloads it; a root run with nobody to act for would load it in root's domain.
+  [ -n "$run_user" ] || die "refusing to install the per-user service as root; run as a normal user, use sudo from one, or pass --system"
+  sudo -u "$run_user" -H env ${KEEPALIVE_PROXY_PORT:+KEEPALIVE_PROXY_PORT="$KEEPALIVE_PROXY_PORT"} \
+    KEEPALIVE_PROXY_HOME="$home_dir" "$bin" "${service_args[@]}" \
+    || die "'service install' failed; the binary stays at $bin (run scripts/uninstall.sh to remove it)"
+elif ! "$bin" "${service_args[@]}"; then
   die "'service install' failed; the binary stays at $bin (run scripts/uninstall.sh to remove it)"
 fi
 echo "install: done"

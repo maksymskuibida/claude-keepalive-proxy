@@ -137,6 +137,10 @@ bash "$src/scripts/install.sh" --bin "$stub" --no-service >/dev/null 2>&1
 SUDO_USER=nobody-here bash "$src/scripts/uninstall.sh" >/dev/null 2>&1 && [ ! -e "$HOME/.keepalive-proxy" ] \
   && ok "default state folder resolves from HOME when not root" || bad "default state folder resolves from HOME when not root"
 
+# Under (simulated) sudo the user service is installed and unloaded by the same account.
+out=$(bash "$src/tests/scripts/probe_sudo_scope.sh" 2>&1) && ok "sudo install and uninstall use the same account" \
+  || { bad "sudo install and uninstall use the same account"; echo "$out"; }
+
 # Bad arguments fail.
 bash "$src/scripts/install.sh" --port 99999 --dry-run >/dev/null 2>&1 \
   && bad "bad port refused" || ok "bad port refused"
