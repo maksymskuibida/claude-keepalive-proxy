@@ -1,5 +1,5 @@
 [package]
-name = "claude-keepalive-proxy"
+name = "keepalive-proxy"
 version = "0.1.0"
 edition = "2021"
 
