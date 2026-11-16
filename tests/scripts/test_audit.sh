@@ -68,7 +68,7 @@ out=$(audit "$r"); rc=$?
 [ $rc -ne 0 ] && grep -q '^f.txt:1:' <<<"$out" && ok "default deny-list hit" || bad "default deny-list hit"
 rm "$r/.git/audit-denylist"
 echo "Bluefin" > "$work/other-list"
-AUDIT_DENYLIST="$work/other-list" audit "$r" >/dev/null && bad "env deny-list" || ok "env deny-list hit"
+(cd "$r" && env AUDIT_DENYLIST="$work/other-list" bash scripts/audit.sh) >/dev/null && bad "env deny-list" || ok "env deny-list hit"
 
 # Already-pushed commits (on a remote) are not rescanned for messages.
 r=$(newrepo pushed); echo clean > "$r/f.txt"; commit "$r" "zebulonq msg"
@@ -168,7 +168,7 @@ echo clean > "$r/f.txt"; commit "$r" base
 (cd "$r" && bash scripts/hook-install.sh >/dev/null)
 git -C "$r" push -q origin HEAD:refs/heads/main 2>/dev/null
 printf 'head\377\376 junk\0 mail bob@exam''ple.com\n' > "$r/img.bin"; commit "$r" "add image"
-out=$(LC_ALL=en_US.UTF-8 audit "$r"); rc=$?
+out=$(cd "$r" && env LC_ALL=en_US.UTF-8 bash scripts/audit.sh); rc=$?
 [ $rc -eq 1 ] && grep -q '^img.bin:' <<<"$out" && grep -q 'commit .*:img.bin:' <<<"$out" && ok "non-UTF-8 binary leak found" || bad "non-UTF-8 binary leak rc=$rc out=$out"
 LC_ALL=en_US.UTF-8 git -C "$r" push -q origin HEAD:refs/heads/main 2>/dev/null && bad "non-UTF-8 leak push blocked" || ok "non-UTF-8 leak push blocked"
 
