@@ -141,6 +141,17 @@ SUDO_USER=nobody-here bash "$src/scripts/uninstall.sh" >/dev/null 2>&1 && [ ! -e
 out=$(bash "$src/tests/scripts/probe_sudo_scope.sh" 2>&1) && ok "sudo install and uninstall use the same account" \
   || { bad "sudo install and uninstall use the same account"; echo "$out"; }
 
+# A root run with no SUDO_USER and no --system is refused before anything is created.
+fk=$work/rootbin; mkdir -p "$fk"
+printf '#!/bin/sh\nif [ "$1" = -u ]; then echo 0; else exec /usr/bin/id "$@"; fi\n' > "$fk/id"; chmod 755 "$fk/id"
+for mode in "" "--dry-run"; do
+  rst=$work/root-state
+  out=$(env -u SUDO_USER PATH="$fk:$PATH" bash "$src/scripts/install.sh" --home "$rst" --bin "$stub" $mode 2>&1) \
+    && bad "root without SUDO_USER refused ${mode:-(normal)}" || ok "root without SUDO_USER refused ${mode:-(normal)}"
+  case "$out" in *"would run"*) bad "no 'would run' for the refused case ${mode:-(normal)}" ;; *) ok "no 'would run' for the refused case ${mode:-(normal)}" ;; esac
+  [ ! -e "$rst" ] && ok "nothing created ${mode:-(normal)}" || { bad "nothing created ${mode:-(normal)}"; rm -rf "$rst"; }
+done
+
 # Bad arguments fail.
 bash "$src/scripts/install.sh" --port 99999 --dry-run >/dev/null 2>&1 \
   && bad "bad port refused" || ok "bad port refused"

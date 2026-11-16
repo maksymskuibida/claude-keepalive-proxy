@@ -73,6 +73,10 @@ if [ -n "$label" ]; then
   case "$label" in *[!A-Za-z0-9._-]*) die "invalid label '$label'" ;; esac
 fi
 
+if [ "$no_service" = 0 ] && [ "$system" = 0 ] && [ "$(id -u)" = 0 ] && [ -z "$run_user" ]; then
+  die "refusing to install the per-user service as root; run as a normal user, use sudo from one, or pass --system"
+fi
+
 root=$(cd "$(dirname "$0")/.." && pwd)
 bin_dir=$home_dir/bin
 bin=$bin_dir/keepalive-proxy
