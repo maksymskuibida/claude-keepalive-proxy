@@ -236,6 +236,28 @@ mkdir -p "$r/notes"; echo plain > "$r/notes/zebulonq-todo.txt"; commit "$r" note
 out=$(audit "$r"); rc=$?
 [ $rc -ne 0 ] && grep -q '^path notes/zebulonq-todo.txt: \[user-name\]' <<<"$out" && ok "audit names the leaking path" || bad "path name rc=$rc out=$out"
 
+# User name joined to an underscore or digit is found; a longer word of letters is not.
+for l in "handle zebulonq_96 here" "handle zebulonq2 here" "ZEBULONQ_x" "zebulonq"; do
+  r=$(newrepo joined); echo "$l" > "$r/f.txt"; commit "$r"
+  out=$(audit "$r"); rc=$?
+  [ $rc -ne 0 ] && grep -q '^f.txt:1: \[user-name\]' <<<"$out" && ok "joined name found: $l" || bad "joined name ($l) rc=$rc out=$out"
+  rm -rf "$r"
+done
+r=$(newrepo joinedfile); echo plain > "$r/zebulonq_notes.txt"; commit "$r"
+out=$(audit "$r"); rc=$?
+[ $rc -ne 0 ] && grep -q '^path zebulonq_notes.txt: \[user-name\]' <<<"$out" && ok "joined name in file name found" || bad "joined file name rc=$rc out=$out"
+r=$(newrepo joinedmsg); echo clean > "$r/f.txt"; commit "$r" "note from zebulonq_96"
+out=$(audit "$r"); rc=$?
+[ $rc -ne 0 ] && grep -q 'message:1: \[user-name\]' <<<"$out" && ok "joined name in commit message found" || bad "joined message rc=$rc out=$out"
+r=$(newrepo joinedhook); echo "id zebulonq_96" > "$r/f.txt"; commit "$r"
+git init -q --bare "$work/joinedhook-pub.git"; git -C "$r" remote add public "$work/joinedhook-pub.git"
+(cd "$r" && bash scripts/hook-install.sh >/dev/null)
+out=$(git -C "$r" push public HEAD:refs/heads/main 2>&1); rc=$?
+[ $rc -ne 0 ] && grep -q 'f.txt:1: \[user-name\]' <<<"$out" && ok "hook blocks a push with a joined name" || bad "joined hook rc=$rc out=$out"
+r=$(newrepo longer); echo "zebulonqueen and azebulonq" > "$r/zebulonqueen.txt"; commit "$r" "zebulonqueen"
+out=$(audit "$r"); rc=$?
+[ $rc -eq 0 ] && ok "longer word containing the name is not flagged" || bad "longer word rc=$rc out=$out"
+
 # The real repository's own tracked files are clean.
 if (cd "$src" && git rev-parse -q --verify HEAD >/dev/null 2>&1); then
   (cd "$src" && HOME=$real_home USER=$real_user bash scripts/audit.sh >/dev/null) && ok "this repo audits clean" || bad "this repo audits clean"

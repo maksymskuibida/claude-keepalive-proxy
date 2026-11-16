@@ -60,13 +60,16 @@ failed=$tmp/failed
 # A scan step that fails must never read as clean.
 fail_scan() { echo "$1" >> "$failed"; }
 
-# Fixed strings: current user, home path, deny-list lines.
+# Fixed strings: home path, deny-list lines. The user name is a case-insensitive
+# regex whose boundaries exclude only letters (so name_96 and name2 match,
+# a longer word of letters does not).
 fixed=$tmp/fixed
 : > "$fixed"
 user=${USER:-$(id -un 2>/dev/null || true)}
 case "$user" in
   ""|root|runner|ubuntu|admin|nobody) ;;
-  *) [ "${#user}" -ge 3 ] && printf '%s\n' "$user" > "$tmp/user" ;;
+  *) [ "${#user}" -ge 3 ] && printf '(^|[^[:alpha:]])%s([^[:alpha:]]|$)\n' \
+       "$(printf '%s' "$user" | sed 's/[][\\.*^$(){}?+|]/\\&/g')" > "$tmp/user" ;;
 esac
 home=${HOME:-}
 [ "${#home}" -gt 1 ] && printf '%s\n' "$home" >> "$fixed"
@@ -98,7 +101,7 @@ scan() {
   tr '\0' ' ' > "$tmp/in" || fail_scan "tr failed on $LABEL"
   grep -anF -f "$fixed" "$tmp/in" 2>/dev/null | tag home-or-denylist >> "$hits"
   if [ -s "$tmp/user" ]; then
-    grep -anwiF -f "$tmp/user" "$tmp/in" 2>/dev/null | tag user-name >> "$hits"
+    grep -aniE -f "$tmp/user" "$tmp/in" 2>/dev/null | tag user-name >> "$hits"
   fi
   grep -anE "$home_re" "$tmp/in" 2>/dev/null | tag home-path >> "$hits"
   grep -anoE "$email_re" "$tmp/in" 2>/dev/null | grep -viE ':[^@:]*@users\.noreply\.github\.com$|:no-?reply@[^@]*$' | tag email >> "$hits"
@@ -181,8 +184,6 @@ sort -u "$commits" | while read -r c; do
   [ "${PIPESTATUS[0]}" -eq 0 ] || fail_scan "git log failed on $c"
   git log -1 --format='author: %an <%ae>%ncommitter: %cn <%ce>' "$c" | scan "commit $short header"
   [ "${PIPESTATUS[0]}" -eq 0 ] || fail_scan "git log failed on $c"
-  git -c core.quotepath=off diff-tree -r -z --root --no-commit-id --name-only --diff-filter=AR "${c}" 2>/dev/null \
-    | while IFS= read -r -d '' pf; do scan_name "commit $short path" "$pf"; done
   : > "$tmp/map"
   # A merge shows no diff by itself, so it is diffed against its first parent:
   # this finds lines only the merge adds (and also re-scans merged-in lines).
