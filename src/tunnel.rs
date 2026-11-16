@@ -178,7 +178,8 @@ fn stamp() -> String {
 
 /// Parses the listen port; anything that is not a valid u16 (junk, above 65535) gives the default 18080.
 fn parse_port(v: Option<&str>) -> u16 {
-    v.and_then(|s| s.trim().parse::<u16>().ok()).unwrap_or(18080)
+    v.and_then(|s| s.trim().parse::<u16>().ok())
+        .unwrap_or(18080)
 }
 
 /// Runs the proxy until killed. Reads the KEEPALIVE_* environment variables. Returns an exit code.
