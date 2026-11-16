@@ -150,21 +150,19 @@ fn handle(mut client: TcpStream, idle: u32, intvl: u32, cnt: u32, verbose: bool)
         .unwrap_or_default();
     // errno 60 (ETIMEDOUT) on the upstream leg = keepalive probes went unanswered: the path was dead and we cut it
     // (without this proxy the client would have waited minutes). 54 = reset by peer.
-    let dead_path = logline::is_dead_path(&end);
-    if verbose || dead_path {
-        eprintln!(
-            "{}",
-            logline::format(
-                &stamp(),
-                target,
-                opened.elapsed().as_secs(),
-                stats.bytes_c2u.load(Ordering::Relaxed),
-                stats.bytes_u2c.load(Ordering::Relaxed),
-                stats.max_gap_ms.load(Ordering::Relaxed) / 1000,
-                &end,
-            )
-        );
-    }
+    // Every closed tunnel writes one line (DEADPATH-marked when dead), so report counts them all.
+    eprintln!(
+        "{}",
+        logline::format(
+            &stamp(),
+            target,
+            opened.elapsed().as_secs(),
+            stats.bytes_c2u.load(Ordering::Relaxed),
+            stats.bytes_u2c.load(Ordering::Relaxed),
+            stats.max_gap_ms.load(Ordering::Relaxed) / 1000,
+            &end,
+        )
+    );
 }
 
 /// Seconds-resolution wall clock (UTC) without pulling in a date crate.
