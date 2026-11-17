@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install toolchain components
+        run: rustup component add rustfmt clippy
+      - name: Build
+        run: cargo build --all-targets
+      - name: Format check
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test
+      - name: Shell tests
+        run: |
+          for t in tests/scripts/test_*.sh; do
+            echo "== $t"
+            bash "$t" || exit 1
+          done
+      # Range mode scans commits and tracked files only: no branch or tag names,
+      # and no annotated tags other than one at HEAD. No tag scan; out of scope here.
+      - name: Leak audit (full history)
+        run: bash scripts/audit.sh --range HEAD
